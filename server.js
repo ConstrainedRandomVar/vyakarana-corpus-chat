@@ -83,9 +83,14 @@ function toolFns() { return T.TOOL_SCHEMAS.map(s => ({ name: s.name, description
 // One generateContent call WITH tools + history (fetch; both auth modes)
 // ===========================================================================
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-// transient conditions worth a retry (free-tier "high demand" 503s, rate limits, timeouts)
-const RETRYABLE = /high demand|overload|unavailable|resource exhausted|rate|quota|try again|deadline|timeout|temporar|\b(429|500|502|503|504)\b/i;
-const RETRIES = 4;
+// Rate-limit / quota (429) is NOT retryable: Gemini's own retryDelay is the per-minute free-tier
+// window (20–60s), far longer than any web-request backoff — retrying just fires early, fails again,
+// and burns MORE of the exhausted quota. Surface a clean "busy" message instead. Only genuine
+// transient overload / 5xx / timeouts are worth a quick retry.
+const RATE_LIMITED = /quota|rate limit|resource exhausted|\b429\b/i;
+const RETRYABLE = /high demand|overload|unavailable|try again|deadline|timeout|temporar|\b(500|502|503|504)\b/i;
+const RETRIES = 3;
+const BUSY_MSG = 'The assistant is briefly rate-limited (free tier, 20 req/min). Please wait ~a minute and ask again — or ask a simpler question (each answer makes several model calls).';
 
 async function generate(contents) {
   const body = {
@@ -106,11 +111,16 @@ async function generate(contents) {
     let d = null, transient = false;
     try {
       const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(60000) });
+      if (res.status === 429) throw new Error(BUSY_MSG);            // rate limit — surface, never retry
       if (!res.ok && res.status >= 500) { transient = true; lastMsg = 'HTTP ' + res.status; }
       else d = await res.json();
-    } catch (e) { transient = true; lastMsg = e.name === 'TimeoutError' ? 'request timed out' : String(e.message || e); }
+    } catch (e) {
+      if (e.message === BUSY_MSG) throw e;                          // don't swallow the busy signal into a retry
+      transient = true; lastMsg = e.name === 'TimeoutError' ? 'request timed out' : String(e.message || e);
+    }
     if (d && d.error) {
       lastMsg = d.error.message || JSON.stringify(d.error);
+      if (RATE_LIMITED.test(lastMsg)) throw new Error(BUSY_MSG);    // quota/429 — surface, never retry
       if (!(attempt < RETRIES && RETRYABLE.test(lastMsg))) throw new Error('Gemini: ' + lastMsg);
       transient = true;
     }
