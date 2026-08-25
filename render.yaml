@@ -14,6 +14,6 @@ services:
       - key: GEMINI_API_KEY
         sync: false            # you paste this in the Render dashboard (secret)
       - key: GEMINI_MODEL
-        value: gemini-3.6-flash
+        value: gemini-3.5-flash-lite   # free tier: 15 RPM / 500 RPD (vs 3.6-flash's 5 RPM / 20 RPD)
       # - key: ACCESS_PASSWORD  # uncomment + set in dashboard to gate the app
       #   sync: false
