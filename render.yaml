@@ -1,0 +1,19 @@
+# Render Blueprint — one-click config for the Vyākaraṇa Corpus Assistant.
+# Render → New → Blueprint → connect this repo → it reads this file.
+# You'll be prompted to enter GEMINI_API_KEY (it is NOT stored in the repo).
+services:
+  - type: web
+    name: vyakarana-corpus-chat
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false            # you paste this in the Render dashboard (secret)
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      # - key: ACCESS_PASSWORD  # uncomment + set in dashboard to gate the app
+      #   sync: false
