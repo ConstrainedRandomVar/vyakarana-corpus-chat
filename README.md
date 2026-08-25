@@ -27,6 +27,6 @@ Replace `corpus.json` + `corpus-tools.js` here, commit, push — Render auto-dep
 
 ## Config (env vars)
 - `GEMINI_API_KEY` *(required, secret)* — AI Studio key.
-- `GEMINI_MODEL` *(optional)* — default `gemini-2.5-flash`.
+- `GEMINI_MODEL` *(optional)* — default `gemini-3.6-flash`.
 - `ACCESS_PASSWORD` *(optional, secret)* — if set, users must enter this code.
 - `PORT` — provided by Render automatically.
