@@ -81,6 +81,11 @@ function toolFns() { return T.TOOL_SCHEMAS.map(s => ({ name: s.name, description
 // ===========================================================================
 // One generateContent call WITH tools + history (fetch; both auth modes)
 // ===========================================================================
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+// transient conditions worth a retry (free-tier "high demand" 503s, rate limits, timeouts)
+const RETRYABLE = /high demand|overload|unavailable|resource exhausted|rate|quota|try again|deadline|timeout|temporar|\b(429|500|502|503|504)\b/i;
+const RETRIES = 4;
+
 async function generate(contents) {
   const body = {
     systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
@@ -95,11 +100,26 @@ async function generate(contents) {
   } else {
     url = V_ENDPOINT; headers.Authorization = 'Bearer ' + vertexToken();
   }
-  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
-  const d = await res.json();
-  if (d.error) throw new Error('Gemini: ' + (d.error.message || JSON.stringify(d.error)));
-  const cand = (d.candidates || [])[0] || {};
-  return { content: cand.content || { parts: [] }, usage: d.usageMetadata || {}, finishReason: cand.finishReason };
+  let lastMsg = 'unknown error';
+  for (let attempt = 1; attempt <= RETRIES; attempt++) {
+    let d = null, transient = false;
+    try {
+      const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(60000) });
+      if (!res.ok && res.status >= 500) { transient = true; lastMsg = 'HTTP ' + res.status; }
+      else d = await res.json();
+    } catch (e) { transient = true; lastMsg = e.name === 'TimeoutError' ? 'request timed out' : String(e.message || e); }
+    if (d && d.error) {
+      lastMsg = d.error.message || JSON.stringify(d.error);
+      if (!(attempt < RETRIES && RETRYABLE.test(lastMsg))) throw new Error('Gemini: ' + lastMsg);
+      transient = true;
+    }
+    if (d && !d.error) {
+      const cand = (d.candidates || [])[0] || {};
+      return { content: cand.content || { parts: [] }, usage: d.usageMetadata || {}, finishReason: cand.finishReason };
+    }
+    if (transient && attempt < RETRIES) { await sleep(attempt * 1500 + 500); continue; } // 2s,3.5s,5s
+    throw new Error('Gemini: ' + lastMsg + ' (after ' + attempt + ' tries)');
+  }
 }
 
 function trimResult(res) {
