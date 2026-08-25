@@ -72,6 +72,7 @@ HARD RULES
 4. USE DEVANĀGARĪ for all grammatical facet values (cases, roles, pratyayas, samāsa types).
 5. DISCOVER first with list_values(facet) if unsure what values exist.
 6. Prefer 3–8 vivid cited examples + the true total (use count_only/count_by) over dumping everything; say how many matched.
+7. FORMAT answers in plain Markdown (headings, **bold**, bullet/numbered lists). Do NOT use LaTeX or math notation — no $...$, \\rightarrow, \\sqrt, \\text, \\ge, \\le. Use plain Unicode instead: → ⇒ ≥ ≤ × · √. Show a samāsa peel as layer → layer → layer.
 
 Text keys: Gita, Kena, Kathaka, Isha, Mandukya, Mundaka, Prashna, Taitiriya, Aitareya, Chandogya, Brha, BS,
 VC, PD, AB. Map loose names to the right key. Keep prose tight and scholarly; render Sanskrit in Devanāgarī.`;
@@ -169,9 +170,16 @@ const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 h1{font-size:20px;margin:0 0 2px}.sub{color:var(--muted);font-size:13px;margin:0 0 14px}
 .ex{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 16px}
 .ex button{font:inherit;font-size:12.5px;color:var(--acc);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:6px 11px;cursor:pointer}
-.msg{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px 16px;margin:0 0 12px;white-space:pre-wrap;word-wrap:break-word}
-.msg.u{background:transparent;border-style:dashed;color:var(--muted);font-size:14px}
+.msg{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px 16px;margin:0 0 12px;word-wrap:break-word;overflow-wrap:anywhere}
+.msg.u{background:transparent;border-style:dashed;color:var(--muted);font-size:14px;white-space:pre-wrap}
 .msg.a{font-family:"Noto Serif Devanagari","Segoe UI",serif}
+.msg.a h3,.msg.a h4,.msg.a h5,.msg.a h6{margin:.7em 0 .3em;font-size:15px;font-weight:700;line-height:1.3}
+.msg.a p{margin:.45em 0}
+.msg.a ul,.msg.a ol{margin:.35em 0 .35em 1.3em;padding:0}
+.msg.a li{margin:.18em 0}
+.msg.a code{background:rgba(120,120,120,.16);padding:1px 5px;border-radius:5px;font-size:13.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.msg.a strong{font-weight:700}.msg.a em{font-style:italic}
+.msg.a hr{border:0;border-top:1px solid var(--line);margin:.8em 0}
 .trace{color:var(--muted);font-size:11.5px;margin-top:8px;border-top:1px solid var(--line);padding-top:6px}
 form{position:fixed;left:0;right:0;bottom:0;background:var(--bg);border-top:1px solid var(--line);padding:12px 18px}
 .row{max-width:820px;margin:0 auto;display:flex;gap:8px}
@@ -179,7 +187,10 @@ textarea{flex:1;font:inherit;font-size:15px;color:var(--ink);background:var(--ca
 button.send{font:inherit;font-weight:600;color:#fff;background:var(--acc);border:0;border-radius:10px;padding:0 18px;cursor:pointer}
 button.send:disabled{opacity:.5}
 .pw{margin:0 0 14px}.pw input{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink)}
-</style></head><body><div class="wrap">
+</style>
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+</head><body><div class="wrap">
 <h1>Vyākaraṇa Corpus Assistant</h1>
 <p class="sub">Ask in plain English about ${nText} analysed Sanskrit texts (${nVerses.toLocaleString()} verses · ${nWords.toLocaleString()} words). Every answer is grounded in a deterministic query with citations — no guessing.</p>
 ${PASSWORD ? '<div class="pw">Access code: <input id="pw" type="password" placeholder="code"></div>' : ''}
@@ -199,6 +210,7 @@ ${PASSWORD ? '<div class="pw">Access code: <input id="pw" type="password" placeh
 <script>
 const log=document.getElementById('log'),q=document.getElementById('q'),s=document.getElementById('s'),f=document.getElementById('f');
 function add(cls,txt){const d=document.createElement('div');d.className='msg '+cls;d.textContent=txt;log.appendChild(d);d.scrollIntoView({behavior:'smooth',block:'end'});return d;}
+function renderMd(el,text){ if(window.marked&&window.DOMPurify){ el.innerHTML=DOMPurify.sanitize(marked.parse(String(text))); } else { el.textContent=text; } el.scrollIntoView({behavior:'smooth',block:'end'}); }
 document.querySelectorAll('.ex button').forEach(b=>b.onclick=()=>{q.value=b.textContent;q.focus();});
 f.onsubmit=async e=>{e.preventDefault();const question=q.value.trim();if(!question)return;
   add('u',question);q.value='';s.disabled=true;const pend=add('a','…thinking…');
@@ -206,7 +218,7 @@ f.onsubmit=async e=>{e.preventDefault();const question=q.value.trim();if(!questi
     const r=await fetch('chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:question,pw:pw?pw.value:''})});
     const d=await r.json();
     if(d.error){pend.textContent='⚠ '+d.error;}
-    else{pend.textContent=d.answer||'(no answer)';
+    else{renderMd(pend,d.answer||'(no answer)');
       if(d.trace&&d.trace.length){const t=document.createElement('div');t.className='trace';t.textContent='tools: '+d.trace.map(x=>x.tool).join(' → ');pend.appendChild(t);}}
   }catch(err){pend.textContent='⚠ '+err.message;}
   s.disabled=false;q.focus();};
