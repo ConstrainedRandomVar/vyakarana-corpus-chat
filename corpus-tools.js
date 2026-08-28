@@ -213,6 +213,9 @@ function find_clauses(c, a) {
   a = a || {};
   const hits = [];
   for (const v of verses(c, a.text)) {
+    const nClauses = (v.clauses || []).length;   // vākya-vibhāga: how many clauses the sentence decomposes into
+    if (a.min_clauses != null && nClauses < a.min_clauses) continue;
+    if (a.max_clauses != null && nClauses > a.max_clauses) continue;
     for (const cl of (v.clauses || [])) {
       if (a.type && cl.type !== a.type) continue;
       if (a.subordinate != null) {
@@ -226,7 +229,7 @@ function find_clauses(c, a) {
       hits.push(Object.assign(citeVerse(v), {
         type: cl.type, subordinateTo: cl.subordinateTo, headWord: cl.headWord,
         elided: cl.elided, anuktaKarta: cl.anuktaKarta, gloss: cl.gloss,
-        words: cl.words, context: v.moola,
+        words: cl.words, clauseCount: nClauses, context: v.moola,
       }));
     }
   }
@@ -306,6 +309,7 @@ const FACETS = {
   voice:           v => (v.clusters || []).filter(cl => cl.voice).map(cl => cl.voice),
   transitivity:    v => (v.clusters || []).filter(cl => cl.transitivity).map(cl => cl.transitivity),
   clause_type:     v => (v.clauses || []).filter(cl => cl.type).map(cl => cl.type),
+  clause_count:    v => Array.isArray(v.clauses) && v.clauses.length ? [String(v.clauses.length)] : [],   // vākya-vibhāga: sentence-decomposition complexity (clauses per verse)
   krt_pratyaya:    v => v.words.filter(w => w.krt && w.krt.pratyaya).map(w => w.krt.pratyaya),
   samasa_category: v => v.words.filter(w => w.samasaCategory).map(w => w.samasaCategory),
   samasa_type:     (v, c) => v.words.flatMap(w => { const L = c.peel[w.compound]; return L ? L.map(x => x.type).filter(Boolean) : []; }),
@@ -447,11 +451,16 @@ const TOOL_SCHEMAS = [
   },
   {
     name: 'find_clauses',
-    description: 'Query clause structure: filter by clause type (main/relative/correlative/subordinate/' +
-      'nominal/quotation), whether it is subordinate, or whether it has an elided/unstated word (elision, ' +
-      'anukta-kartā). Clause structure is richest for the Gemini-analysed texts.',
+    description: 'Query clause structure / vākya-vibhāga (sentence decomposition): filter by clause type ' +
+      '(main/relative/correlative/subordinate/nominal/quotation), whether it is subordinate, whether it has ' +
+      'an elided/unstated word (elision, anukta-kartā / adhyāhāra), or by how many clauses the whole sentence ' +
+      'decomposes into (min_clauses/max_clauses — use to find complex multi-clause sentences for decomposition ' +
+      'practice). Each hit reports clauseCount (total clauses in the verse). Clause structure is richest for ' +
+      'the Gemini-analysed texts. To see a sentence\'s FULL decomposition (all clauses + kāraka trace), use get_verse.',
     parameters: { type: 'object', properties: {
       type: { type: 'string' }, subordinate: { type: 'boolean' }, elided: { type: 'boolean' },
+      min_clauses: { type: 'integer', description: 'verse decomposes into at least this many clauses' },
+      max_clauses: { type: 'integer', description: 'verse decomposes into at most this many clauses' },
       text: { type: 'string' }, limit: { type: 'integer' }, count_only: { type: 'boolean' },
     } },
   },
@@ -481,7 +490,7 @@ const TOOL_SCHEMAS = [
       'Great for discovery ("what kāraka roles / samāsa types / pratyayas exist?").',
     parameters: { type: 'object', properties: {
       facet: { type: 'string', description: 'one of: case, vacana, linga, lemma, karaka_role, dhatu, voice, ' +
-        'transitivity, clause_type, krt_pratyaya, taddhita_pratyaya, samasa_category, samasa_type, sutra, ' +
+        'transitivity, clause_type, clause_count, krt_pratyaya, taddhita_pratyaya, samasa_category, samasa_type, sutra, ' +
         'sandhi_rule, relation, bhasya_role, text.' },
       text: { type: 'string' }, limit: { type: 'integer', description: 'top-N by count (default all).' },
     }, required: ['facet'] },
