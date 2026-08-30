@@ -54,11 +54,19 @@ function envelope(hits, opts) {
   if (out.length < count) res.truncated = true;
   return res;
 }
-// iterate verses (optionally filtered to one text or a list)
-function verses(c, textFilter) {
-  if (!textFilter) return c.verses;
-  const set = Array.isArray(textFilter) ? new Set(textFilter) : new Set([textFilter]);
-  return c.verses.filter(v => set.has(v.text));
+// iterate verses (optionally filtered to one text or a list, and/or a ref-prefix). ref_prefix scopes
+// to a chapter/division: "6" matches ref "6.317" (Vicārasāgara taraṅga 6), "1.2" matches "1.2.x".
+function verses(c, textFilter, refPrefix) {
+  let vs = c.verses;
+  if (textFilter) {
+    const set = Array.isArray(textFilter) ? new Set(textFilter) : new Set([textFilter]);
+    vs = vs.filter(v => set.has(v.text));
+  }
+  if (refPrefix != null && refPrefix !== '') {
+    const rp = String(refPrefix);
+    vs = vs.filter(v => v.ref === rp || String(v.ref).startsWith(rp + '.'));
+  }
+  return vs;
 }
 // peel layers for a word record (deref shared dict), or null
 function peelOf(c, wordRec) {
@@ -73,7 +81,7 @@ function citeVerse(v) { return { text: v.text, ref: v.ref }; }
 function query_words(c, a) {
   a = a || {};
   const hits = [];
-  for (const v of verses(c, a.text)) {
+  for (const v of verses(c, a.text, a.ref_prefix)) {
     // build a governor->cluster map for voice/transitivity filters
     let govMap = null;
     if (a.voice || a.transitivity) {
@@ -122,7 +130,7 @@ function query_words(c, a) {
 function find_compounds(c, a) {
   a = a || {};
   const hits = [];
-  for (const v of verses(c, a.text)) {
+  for (const v of verses(c, a.text, a.ref_prefix)) {
     for (const w of v.words) {
       const L = peelOf(c, w);
       if (!L) continue;
@@ -154,7 +162,7 @@ function find_compounds(c, a) {
 function find_sandhi(c, a) {
   a = a || {};
   const hits = [];
-  for (const v of verses(c, a.text)) {
+  for (const v of verses(c, a.text, a.ref_prefix)) {
     for (const s of (v.sandhi || [])) {
       if (a.sutra_num && s.sutra !== a.sutra_num) continue;
       if (a.rule && s.rule !== a.rule) continue;
@@ -192,7 +200,7 @@ function find_relational(c, a) {
   const wanted = RELATION_ALIAS[a.relation] || [a.relation];
   const set = new Set(wanted);
   const hits = [];
-  for (const v of verses(c, a.text)) {
+  for (const v of verses(c, a.text, a.ref_prefix)) {
     for (const e of (v.relations || [])) {
       if (!set.has(e.relation)) continue;
       hits.push(Object.assign(citeVerse(v), {
@@ -212,7 +220,7 @@ function find_relational(c, a) {
 function find_clauses(c, a) {
   a = a || {};
   const hits = [];
-  for (const v of verses(c, a.text)) {
+  for (const v of verses(c, a.text, a.ref_prefix)) {
     const nClauses = (v.clauses || []).length;   // vākya-vibhāga: how many clauses the sentence decomposes into
     if (a.min_clauses != null && nClauses < a.min_clauses) continue;
     if (a.max_clauses != null && nClauses > a.max_clauses) continue;
@@ -242,7 +250,7 @@ function find_clauses(c, a) {
 function search_bhasya(c, a) {
   a = a || {};
   const hits = [];
-  for (const v of verses(c, a.text)) {
+  for (const v of verses(c, a.text, a.ref_prefix)) {
     for (const b of (v.bhasya || [])) {
       // role filter: keep spans of that role; keyword filter within (or whole text)
       let spans = b.spans || [];
@@ -275,7 +283,7 @@ function find_by_sutra(c, a) {
   a = a || {};
   const num = a.num;
   const hits = [];
-  for (const v of verses(c, a.text)) {
+  for (const v of verses(c, a.text, a.ref_prefix)) {
     for (const s of (v.sandhi || [])) {
       if (s.sutra === num) hits.push(Object.assign(citeVerse(v),
         { kind: 'sandhi', rule: s.rule, before: s.before, after: s.after, context: v.moola }));
@@ -323,6 +331,7 @@ const FACETS = {
   relation:        v => (v.relations || []).map(e => e.relation),
   bhasya_role:     v => (v.bhasya || []).flatMap(b => (b.spans || []).map(s => s.role)),
   text:            v => [v.text],
+  chapter:         v => [String(v.ref).split('.')[0]],   // top ref division (Vicārasāgara taraṅga, upaniṣad adhyāya, …); pair with text= for meaning
 };
 
 // ===========================================================================
@@ -333,7 +342,7 @@ function list_values(c, a) {
   const fn = FACETS[a.facet];
   if (!fn) return { error: 'unknown facet: ' + a.facet, facets: Object.keys(FACETS) };
   const counts = {};
-  for (const v of verses(c, a.text)) {
+  for (const v of verses(c, a.text, a.ref_prefix)) {
     for (const val of fn(v, c)) counts[val] = (counts[val] || 0) + 1;
   }
   const rows = Object.keys(counts).map(k => ({ value: k, count: counts[k] }))
@@ -352,7 +361,7 @@ function count_by(c, a) {
   if (!fn) return { error: 'unknown facet: ' + a.facet, facets: Object.keys(FACETS) };
   if (!a.by_text) return list_values(c, a);
   const perText = {};
-  for (const v of verses(c, a.text)) {
+  for (const v of verses(c, a.text, a.ref_prefix)) {
     perText[v.text] = perText[v.text] || {};
     for (const val of fn(v, c)) perText[v.text][val] = (perText[v.text][val] || 0) + 1;
   }
@@ -388,17 +397,19 @@ const TOOL_SCHEMAS = [
     name: 'query_words',
     description: 'Find individual words matching morphological / kāraka / derivation filters. ' +
       'All supplied filters are ANDed. Returns cited word occurrences (text·ref·word). ' +
-      'Coverage note: dhatu/krt/lemma are only populated for the Bhagavad-gītā; meaning/case/' +
-      'vacana/linga/karaka_role/samasa cover all analysed texts.',
+      'Coverage note: dhatu (verbal root) is populated for the Bhagavad-gītā and Vicārasāgara (VS); ' +
+      'krt/lemma are Gita-only; meaning/case/vacana/linga/karaka_role/samasa cover all analysed texts. ' +
+      'VS (reading-only prose) contributes word, meaning, dhātu-root and samāsa — no case/kāraka.',
     parameters: { type: 'object', properties: {
-      text: { type: 'string', description: 'Restrict to one text key (e.g. VC, PD, Gita, Chandogya, Brha).' },
+      text: { type: 'string', description: 'Restrict to one text key (e.g. VC, PD, Gita, Chandogya, Brha, VS).' },
+      ref_prefix: { type: 'string', description: 'Restrict to a chapter/division by ref prefix, e.g. "6" = Vicārasāgara taraṅga 6 (matches ref 6.317), "1.2" = refs under 1.2.' },
       case: { type: 'string', description: 'vibhakti in Devanāgarī, e.g. तृतीया, षष्ठी, सप्तमी.' },
       vacana: { type: 'string', description: 'एकवचन / द्विवचन / बहुवचन.' },
       linga: { type: 'string', description: 'पुंलिङ्ग / स्त्रीलिङ्ग / नपुंसकलिङ्ग.' },
       lemma: { type: 'string', description: 'Exact stem/prātipadika (Gita only).' },
       isSarvanama: { type: 'boolean', description: 'Restrict to pronouns (सर्वनाम).' },
       karaka_role: { type: 'string', description: 'kāraka role, e.g. कर्ता, कर्म, करणम्, सम्प्रदानम्, अपादानम्, अधिकरणम्, विशेषणम्.' },
-      dhatu: { type: 'string', description: 'verbal root (Gita only), e.g. कृ, गम्.' },
+      dhatu: { type: 'string', description: 'verbal root (Gita + VS), e.g. कृ, गम्, दृश्, रूप्.' },
       krt_pratyaya: { type: 'string', description: 'kṛt suffix, e.g. क्त, क्तिन्, शतृ, ल्युट् (from morphology or कृत् peel layer).' },
       taddhita_pratyaya: { type: 'string', description: 'taddhita suffix, e.g. मतुप्, तसिल्, वति (from तद्धित peel layer).' },
       voice: { type: 'string', description: 'clause voice of the governing verb, e.g. कर्तरि, कर्मणि, भावे.' },
@@ -412,9 +423,11 @@ const TOOL_SCHEMAS = [
     name: 'find_compounds',
     description: 'Query the recursive samāsa peel: filter by samāsa type, peel depth (layers), ' +
       'final-member pratyaya, a member/vigraha substring, or a governing sūtra number. Returns each ' +
-      'compound occurrence with its full layer-by-layer peel and per-layer sūtra, cited (text·ref·word).',
+      'compound occurrence with its full layer-by-layer peel and per-layer sūtra, cited (text·ref·word). ' +
+      'Covers all analysed texts INCLUDING Vicārasāgara (VS); use ref_prefix to scope to a chapter/taraṅga.',
     parameters: { type: 'object', properties: {
       text: { type: 'string' },
+      ref_prefix: { type: 'string', description: 'chapter/division ref prefix, e.g. "6" = VS taraṅga 6 (matches 6.317).' },
       type: { type: 'string', description: 'samāsa type substring, e.g. षष्ठी-तत्पुरुष, बहुव्रीहि, द्वन्द्व, कर्मधारय, अव्ययीभाव, तद्धित.' },
       min_layers: { type: 'integer', description: 'minimum peel depth (e.g. 4 for deeply nested).' },
       max_layers: { type: 'integer' },
@@ -491,8 +504,10 @@ const TOOL_SCHEMAS = [
     parameters: { type: 'object', properties: {
       facet: { type: 'string', description: 'one of: case, vacana, linga, lemma, karaka_role, dhatu, voice, ' +
         'transitivity, clause_type, clause_count, krt_pratyaya, taddhita_pratyaya, samasa_category, samasa_type, sutra, ' +
-        'sandhi_rule, relation, bhasya_role, text.' },
-      text: { type: 'string' }, limit: { type: 'integer', description: 'top-N by count (default all).' },
+        'sandhi_rule, relation, bhasya_role, text, chapter.' },
+      text: { type: 'string' },
+      ref_prefix: { type: 'string', description: 'restrict to a chapter/division ref prefix, e.g. "6" = VS taraṅga 6.' },
+      limit: { type: 'integer', description: 'top-N by count (default all).' },
     }, required: ['facet'] },
   },
   {
@@ -501,6 +516,7 @@ const TOOL_SCHEMAS = [
       'Same facets as list_values.',
     parameters: { type: 'object', properties: {
       facet: { type: 'string' }, by_text: { type: 'boolean' }, text: { type: 'string' },
+      ref_prefix: { type: 'string', description: 'restrict to a chapter/division ref prefix, e.g. "6" = VS taraṅga 6.' },
       limit: { type: 'integer' },
     }, required: ['facet'] },
   },
