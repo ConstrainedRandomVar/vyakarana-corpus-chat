@@ -479,9 +479,11 @@ const TOOL_SCHEMAS = [
   },
   {
     name: 'search_bhasya',
-    description: 'Keyword and/or rhetorical-role search over the Śaṅkara-bhāṣya (reading annotation). ' +
-      'Roles: mula, gloss, import, vyakarana (grammatical note), purvapaksha, siddhanta, quote, sangraha, ' +
-      'ekadeshi. Coverage: Gita, BS, 10 upaniṣads (Kena has pada- & vākya-bhāṣya variants). VC/PD/AB have none.',
+    description: 'Keyword and/or rhetorical-role search over the commentary reading annotation (Śaṅkara-bhāṣya ' +
+      'on śruti; Candraśekhara-bhāṣya on the Vivekacūḍāmaṇi). Roles: mula (quoted pratīka), gloss, import ' +
+      '(tātparya/purport), vyakarana (grammatical note), purvapaksha, siddhanta, quote (citation), sangraha, ' +
+      'ekadeshi. Coverage: Gita, BS, 10 upaniṣads (Kena has pada- & vākya-bhāṣya variants), and VC ' +
+      '(Candraśekhara-bhāṣya, 477 verses). PD/AB have none.',
     parameters: { type: 'object', properties: {
       keyword: { type: 'string', description: 'Devanāgarī substring to find in the bhāṣya.' },
       role: { type: 'string', description: 'restrict to spans of this rhetorical role.' },
