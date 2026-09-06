@@ -289,6 +289,12 @@ function find_by_sutra(c, a) {
         { kind: 'sandhi', rule: s.rule, before: s.before, after: s.after, context: v.moola }));
     }
     for (const w of v.words) {
+      // two-layer vibhakti-vidhāna: the sūtra that ordains this word's CASE (e.g. 2.3.29 anya-yoge)
+      if (w.vibhaktiSutra && w.vibhaktiSutra.num === num) {
+        hits.push(Object.assign(citeVerse(v), { kind: 'vibhakti', word: w.word,
+          role: w.overlayRole || null, vibhaktiType: w.vibhaktiType || null,
+          sutraText: w.vibhaktiSutra.text, context: v.moola }));
+      }
       const L = peelOf(c, w);
       if (!L) continue;
       for (const layer of L) {
@@ -309,6 +315,8 @@ function find_by_sutra(c, a) {
 // facet -> function(verse) -> array of {value, cite?} contributions
 const FACETS = {
   case:            v => v.words.filter(w => w.vibhakti).map(w => w.vibhakti),
+  vibhakti_sutra:  v => v.words.filter(w => w.vibhaktiSutra && w.vibhaktiSutra.num).map(w => w.vibhaktiSutra.num),   // सूत्र ordaining the CASE (two-layer)
+  vibhakti_type:   v => v.words.filter(w => w.vibhaktiType).map(w => w.vibhaktiType),   // कारक|उपपद|शेष|विशेष|कर्मप्रवचनीय
   vacana:          v => v.words.filter(w => w.vacana).map(w => w.vacana),
   linga:           v => v.words.filter(w => w.linga).map(w => w.linga),
   lemma:           v => v.words.filter(w => w.lemma != null).map(w => w.lemma),
@@ -492,8 +500,9 @@ const TOOL_SCHEMAS = [
   },
   {
     name: 'find_by_sutra',
-    description: 'Find every place an Aṣṭādhyāyī sūtra is cited in the corpus — both sandhi operations ' +
-      'and samāsa peel layers — cited per verse.',
+    description: 'Find every place an Aṣṭādhyāyī sūtra is cited in the corpus — sandhi operations, samāsa ' +
+      'peel layers, AND the two-layer vibhakti-vidhāna (the sūtra ordaining a word’s CASE, e.g. 2.3.29 ' +
+      'anya-yoge, 2.3.52 kāraka-ṣaṣṭhī) — cited per verse (kind: sandhi | samasa | vibhakti).',
     parameters: { type: 'object', properties: {
       num: { type: 'string', description: 'sūtra number, e.g. 2.2.8, 6.1.101.' },
       text: { type: 'string' }, limit: { type: 'integer' }, count_only: { type: 'boolean' },
@@ -504,9 +513,10 @@ const TOOL_SCHEMAS = [
     description: 'List the distinct values (with occurrence counts) for a facet across the corpus (or one text). ' +
       'Great for discovery ("what kāraka roles / samāsa types / pratyayas exist?").',
     parameters: { type: 'object', properties: {
-      facet: { type: 'string', description: 'one of: case, vacana, linga, lemma, karaka_role, dhatu, voice, ' +
+      facet: { type: 'string', description: 'one of: case, vibhakti_sutra, vibhakti_type, vacana, linga, lemma, karaka_role, dhatu, voice, ' +
         'transitivity, clause_type, clause_count, krt_pratyaya, taddhita_pratyaya, samasa_category, samasa_type, sutra, ' +
-        'sandhi_rule, relation, bhasya_role, text, chapter.' },
+        'sandhi_rule, relation, bhasya_role, text, chapter. ' +
+        '(vibhakti_sutra/vibhakti_type = the two-layer rule ordaining a word’s CASE, e.g. 2.3.29 anya-yoge; VC+AB only so far.)' },
       text: { type: 'string' },
       ref_prefix: { type: 'string', description: 'restrict to a chapter/division ref prefix, e.g. "6" = VS taraṅga 6.' },
       limit: { type: 'integer', description: 'top-N by count (default all).' },
