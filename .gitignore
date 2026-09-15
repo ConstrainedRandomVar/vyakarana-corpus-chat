@@ -1,1 +1,4 @@
 node_modules/
+
+# committed as corpus.json.gz (under GitHub 100MB cap); server gunzips at load
+corpus.json

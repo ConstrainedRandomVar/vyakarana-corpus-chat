@@ -27,7 +27,13 @@ const path = require('path');
 // ---------------------------------------------------------------------------
 function loadCorpus(file) {
   const p = file || path.join(__dirname, 'corpus.json');
-  return JSON.parse(fs.readFileSync(p, 'utf8'));
+  // corpus.json is committed as a gzip (corpus.json.gz, ~10x smaller — keeps it under GitHub's 100MB
+  // limit). Prefer the raw .json when present (local dev / the drift gate keep it, gitignored); otherwise
+  // load the committed .gz (corpus-chat/hf-space ship only the .gz). Both yield the same object.
+  if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
+  const gz = p.endsWith('.gz') ? p : p + '.gz';
+  if (fs.existsSync(gz)) return JSON.parse(require('zlib').gunzipSync(fs.readFileSync(gz)));
+  return JSON.parse(fs.readFileSync(p, 'utf8'));   // no file → original ENOENT error
 }
 
 // ---------------------------------------------------------------------------
