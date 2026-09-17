@@ -397,6 +397,55 @@ function normalizeRef(ref) {
 }
 
 // ===========================================================================
+// TOOL: search_moola — free-text phrase search over the mūla verse text
+// ===========================================================================
+// The stored mūla (v.moola) is in PADACCHEDA form (words split, samāsa members hyphenated),
+// e.g. "आत्मा एव इदम् अग्रे आसीत्". A query typed in either padaccheda ("आत्मा एव इदम्") or a
+// space-collapsed / sandhi'd-spacing form should hit the same verse — so we compare on three
+// tiers and report which one matched:
+//   exact       — substring of the raw mūla (query already in padaccheda spacing)
+//   normalized  — substring after folding away whitespace, daṇḍas, samāsa hyphens & avagraha
+//                 (bridges "इदं सर्वम्" ⇄ "इदंसर्वम्" and hyphenated compounds)
+//   tokens      — every whitespace-token of the query occurs (each as a normalized substring)
+// NOTE: this does NOT bridge VOWEL sandhi across a word-split — a single sandhi'd word like
+// "आत्मैवेदं" (= आत्मा एव इदम्) will not be found in the padaccheda store; query it split, or in
+// padaccheda form. (No sandhi engine here — kept deterministic & fidelity-safe.)
+function moolaNorm(s) {
+  return String(s == null ? '' : s)
+    .replace(/[।॥]+/g, '')       // daṇḍas
+    .replace(/[-–—]/g, '')        // samāsa hyphens
+    .replace(/ऽ/g, '')           // avagraha
+    .replace(/म्/g, 'ं')         // final/labial म् ≡ anusvāra (इदम् ≡ इदं, सर्वम् ≡ सर्वं)
+    .replace(/[ँ]/g, 'ं')        // candrabindu → anusvāra (light fold)
+    .replace(/\s+/g, '');        // all whitespace
+}
+function search_moola(c, a) {
+  a = a || {};
+  const phrase = a.phrase == null ? '' : String(a.phrase);
+  const hits = [];
+  if (!phrase.trim()) return envelope(hits, a);
+  const nPhrase = moolaNorm(phrase);
+  const tokens = phrase.trim().split(/\s+/).map(moolaNorm).filter(Boolean);
+  for (const v of verses(c, a.text, a.ref_prefix)) {
+    const raw = v.moola || '';
+    let mode = null, at = -1;
+    if ((at = raw.indexOf(phrase)) !== -1) mode = 'exact';
+    else if (nPhrase && moolaNorm(raw).indexOf(nPhrase) !== -1) mode = 'normalized';
+    else if (tokens.length > 1) {
+      const nraw = moolaNorm(raw);
+      if (tokens.every(t => nraw.indexOf(t) !== -1)) mode = 'tokens';
+    }
+    if (!mode) continue;
+    // snippet: ±50 chars around the exact match when we have an offset, else the mūla head
+    const snippet = at >= 0
+      ? (at > 50 ? '…' : '') + raw.slice(Math.max(0, at - 50), at + phrase.length + 50) + (at + phrase.length + 50 < raw.length ? '…' : '')
+      : raw.slice(0, 200) + (raw.length > 200 ? '…' : '');
+    hits.push(Object.assign(citeVerse(v), { matchMode: mode, snippet, moola: raw }));
+  }
+  return envelope(hits, a);
+}
+
+// ===========================================================================
 // TOOL: corpus_stats — top-level coverage snapshot
 // ===========================================================================
 function corpus_stats(c) {
@@ -505,6 +554,23 @@ const TOOL_SCHEMAS = [
     } },
   },
   {
+    name: 'search_moola',
+    description: 'Free-text phrase search over the mūla (verse text itself) — "which verse says X?". ' +
+      'The mūla is stored in PADACCHEDA form (words split, samāsa members hyphenated), so a query in ' +
+      'either padaccheda ("आत्मा एव इदम्") or space-collapsed form ("इदंसर्वम्") hits the same verse; ' +
+      'each hit reports matchMode (exact | normalized | tokens) plus a snippet and the full mūla. ' +
+      'Covers ALL 14 texts + VS. NOTE: does not bridge vowel-sandhi across a word split — a single ' +
+      'sandhi\'d word like आत्मैवेदं (=आत्मा एव इदम्) must be queried split or in padaccheda form. ' +
+      'For an exact (text, ref) lookup use get_verse; for grammatical word filters use query_words.',
+    parameters: { type: 'object', properties: {
+      phrase: { type: 'string', description: 'Devanāgarī phrase to find in the mūla, e.g. "इदं सर्वं यदयमात्मा" or "आत्मा एव इदम्".' },
+      text: { type: 'string', description: 'Restrict to one text key (e.g. Brha, Chandogya, VC, Gita, VS).' },
+      ref_prefix: { type: 'string', description: 'Restrict to a chapter/division by ref prefix, e.g. "2.4".' },
+      limit: { type: 'integer', description: 'max hits (default 50; -1 = all).' },
+      count_only: { type: 'boolean', description: 'return only the count.' },
+    }, required: ['phrase'] },
+  },
+  {
     name: 'find_by_sutra',
     description: 'Find every place an Aṣṭādhyāyī sūtra is cited in the corpus — sandhi operations, samāsa ' +
       'peel layers, AND the two-layer vibhakti-vidhāna (the sūtra ordaining a word’s CASE, e.g. 2.3.29 ' +
@@ -556,7 +622,7 @@ const TOOL_SCHEMAS = [
 
 // map name -> fn for a generic dispatcher (handy for a function-calling loop)
 const TOOLS = { query_words, find_compounds, find_sandhi, find_relational, find_clauses,
-  search_bhasya, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
+  search_bhasya, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
 function callTool(c, name, args) {
   const fn = TOOLS[name];
   if (!fn) throw new Error('unknown tool: ' + name);
@@ -565,4 +631,4 @@ function callTool(c, name, args) {
 
 module.exports = { loadCorpus, TOOL_SCHEMAS, TOOLS, callTool,
   query_words, find_compounds, find_sandhi, find_relational, find_clauses,
-  search_bhasya, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
+  search_bhasya, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
