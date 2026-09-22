@@ -251,6 +251,25 @@ function find_clauses(c, a) {
 }
 
 // ===========================================================================
+// TOOL: find_mahavakya — verses that ARE mahāvākyas / identity equations (jīva=brahman),
+// from the human-verified śāstric catalog. Filter by sub-type: mukhya (direct aikya identity —
+// tat tvam asi, ahaṃ brahmāsmi, so'ham asmi) vs badhayam (sublation, world/witness = brahman).
+// ===========================================================================
+function find_mahavakya(c, a) {
+  a = a || {};
+  const hits = [];
+  for (const v of verses(c, a.text, a.ref_prefix)) {
+    const m = v.mahavakya;
+    if (!m) continue;
+    if (a.subtype && m.subtype !== a.subtype) continue;
+    hits.push(Object.assign(citeVerse(v), {
+      subtype: m.subtype, classification: m.label, context: v.moola,
+    }));
+  }
+  return envelope(hits, a);
+}
+
+// ===========================================================================
 // TOOL: search_bhasya — keyword + rhetorical-role search over Śaṅkara-bhāṣya
 // ===========================================================================
 function search_bhasya(c, a) {
@@ -344,6 +363,7 @@ const FACETS = {
   sandhi_rule:     v => (v.sandhi || []).filter(s => s.rule).map(s => s.rule),
   relation:        v => (v.relations || []).map(e => e.relation),
   bhasya_role:     v => (v.bhasya || []).flatMap(b => (b.spans || []).map(s => s.role)),
+  mahavakya:       v => v.mahavakya ? [v.mahavakya.subtype] : [],   // mukhya | badhayam (identity-equation sub-type)
   text:            v => [v.text],
   chapter:         v => [String(v.ref).split('.')[0]],   // top ref division (Vicārasāgara taraṅga, upaniṣad adhyāya, …); pair with text= for meaning
 };
@@ -541,6 +561,22 @@ const TOOL_SCHEMAS = [
     } },
   },
   {
+    name: 'find_mahavakya',
+    description: 'Find the mahāvākyas / identity equations (jīva=brahman "great sayings") in the corpus — a ' +
+      'human-verified śāstric catalog (188 verses across 16 texts + VS). Each hit reports its sub-type and a ' +
+      'classification label. Sub-types: mukhya (direct aikya identity — tat tvam asi, ahaṃ brahmāsmi, ayam ' +
+      'ātmā brahma, so\'ham asmi) and badhayam (identity via sublation — the world/witness resolved into ' +
+      'brahman, often with a dṛṣṭānta like clay-pot or rope-snake). Filter by subtype and/or text; omit ' +
+      'both to list them all. (This is curated identity-statement data, distinct from search_moola\'s raw ' +
+      'phrase search.)',
+    parameters: { type: 'object', properties: {
+      subtype: { type: 'string', description: 'mukhya | badhayam' },
+      text: { type: 'string', description: 'restrict to one text key, e.g. Chandogya, Brha, VC, Gita, VS.' },
+      ref_prefix: { type: 'string', description: 'restrict to a chapter/division ref prefix, e.g. "6.8".' },
+      limit: { type: 'integer' }, count_only: { type: 'boolean' },
+    } },
+  },
+  {
     name: 'search_bhasya',
     description: 'Keyword and/or rhetorical-role search over the commentary reading annotation (Śaṅkara-bhāṣya ' +
       'on śruti; Candraśekhara-bhāṣya on the Vivekacūḍāmaṇi). Roles: mula (quoted pratīka), gloss, import ' +
@@ -587,7 +623,7 @@ const TOOL_SCHEMAS = [
     parameters: { type: 'object', properties: {
       facet: { type: 'string', description: 'one of: case, vibhakti_sutra, vibhakti_type, vacana, linga, lemma, karaka_role, dhatu, voice, ' +
         'transitivity, clause_type, clause_count, krt_pratyaya, taddhita_pratyaya, samasa_category, samasa_type, sutra, ' +
-        'sandhi_rule, relation, bhasya_role, text, chapter. ' +
+        'sandhi_rule, relation, bhasya_role, mahavakya, text, chapter. ' +
         '(vibhakti_sutra/vibhakti_type = the two-layer rule ordaining a word’s CASE, e.g. 2.3.29 anya-yoge; VC+AB only so far.)' },
       text: { type: 'string' },
       ref_prefix: { type: 'string', description: 'restrict to a chapter/division ref prefix, e.g. "6" = VS taraṅga 6.' },
@@ -622,7 +658,7 @@ const TOOL_SCHEMAS = [
 
 // map name -> fn for a generic dispatcher (handy for a function-calling loop)
 const TOOLS = { query_words, find_compounds, find_sandhi, find_relational, find_clauses,
-  search_bhasya, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
+  find_mahavakya, search_bhasya, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
 function callTool(c, name, args) {
   const fn = TOOLS[name];
   if (!fn) throw new Error('unknown tool: ' + name);
@@ -631,4 +667,4 @@ function callTool(c, name, args) {
 
 module.exports = { loadCorpus, TOOL_SCHEMAS, TOOLS, callTool,
   query_words, find_compounds, find_sandhi, find_relational, find_clauses,
-  search_bhasya, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
+  find_mahavakya, search_bhasya, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
