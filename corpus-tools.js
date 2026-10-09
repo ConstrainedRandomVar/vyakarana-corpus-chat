@@ -270,6 +270,28 @@ function find_mahavakya(c, a) {
 }
 
 // ===========================================================================
+// TOOL: find_virodha — curated विरोधपरिहारः units: an APPARENT contradiction (one subject, opposed predicates)
+// that the text resolves. Composed only from the mūla, Śaṅkara's bhāṣya and Ānandagiri's ṭīkā (attributed). One hit
+// per unit (deduped across the verses it spans). Filters: theme, side mode, parihāra source, text, keyword.
+// ===========================================================================
+function find_virodha(c, a) {
+  a = a || {}; const seen = new Set(), hits = [];
+  for (const v of verses(c, a.text, a.ref_prefix)) for (const u of (v.virodha || [])) {
+    if (seen.has(u.unit)) continue;
+    if (a.theme && u.theme !== a.theme) continue;
+    if (a.mode && !u.pairs.some(p => p.sideA.mode === a.mode || p.sideB.mode === a.mode)) continue;
+    if (a.parihara_source && !u.pairs.some(p => p.parihara.source === a.parihara_source)) continue;
+    if (a.keyword && !u.pairs.some(p => contains(p.desc, a.keyword) || contains(p.sideA.label, a.keyword) || contains(p.sideB.label, a.keyword) || contains(p.parihara.quote, a.keyword))) continue;
+    seen.add(u.unit);
+    hits.push({ text: v.text, ref: v.ref, unit: u.unit, title: u.title, theme: u.theme, voice: u.voice, verses: u.verses, status: u.status,
+      pairs: u.pairs.map(p => ({ paradox: p.desc, side_A: p.sideA.label, side_B: p.sideB.label, modes: [p.sideA.mode, p.sideB.mode].filter(Boolean),
+        parihara: p.parihara.quote, parihara_source: p.parihara.source, parihara_ref: p.parihara.ref })),
+      same_paradox: u.same });
+  }
+  return envelope(hits, a);
+}
+
+// ===========================================================================
 // TOOL: search_bhasya — keyword + rhetorical-role search over Śaṅkara-bhāṣya
 // ===========================================================================
 function search_bhasya(c, a) {
@@ -364,6 +386,9 @@ const FACETS = {
   relation:        v => (v.relations || []).map(e => e.relation),
   bhasya_role:     v => (v.bhasya || []).flatMap(b => (b.spans || []).map(s => s.role)),
   mahavakya:       v => v.mahavakya ? [v.mahavakya.subtype] : [],   // mukhya | badhayam (identity-equation sub-type)
+  virodha_theme:   v => (v.virodha || []).map(u => u.theme),   // विरोधपरिहारः paradox theme (motion_space, scale, knowing, agency, …)
+  virodha_mode:    v => (v.virodha || []).flatMap(u => u.pairs.flatMap(p => [p.sideA.mode, p.sideB.mode])).filter(Boolean),   // how each side is grounded (upAdhikRta, iva, svena_rUpeNa, …)
+  virodha_source:  v => (v.virodha || []).flatMap(u => u.pairs.map(p => p.parihara.source)).filter(Boolean),   // who states the reconciliation: bhashya | mula | tika | implicit
   text:            v => [v.text],
   chapter:         v => [String(v.ref).split('.')[0]],   // top ref division (Vicārasāgara taraṅga, upaniṣad adhyāya, …); pair with text= for meaning
 };
@@ -561,6 +586,28 @@ const TOOL_SCHEMAS = [
     } },
   },
   {
+    name: 'find_virodha',
+    description: 'Find the विरोधपरिहारः passages — places where an APPARENT contradiction (one subject given opposed ' +
+      'predicates: moves/unmoving, far/near, minute/vast, acts/does not act, unborn/born, knowable/unknowable …) is ' +
+      'resolved by the text. Curated from the mūla, Śaṅkara\'s bhāṣya and Ānandagiri\'s ṭīkā (a reconciliation stated ' +
+      'only by Ānandagiri is marked parihara_source=tika); 31 units across Īśa, Kena, Kaṭha, Muṇḍaka, Māṇḍūkya-kārikā, ' +
+      'Bṛhad, Gītā and the Brahmasūtra — a candidate set under expert review. Each hit gives the paradox pairs, the two ' +
+      'sides in Śaṅkara\'s own words, how each side is grounded (mode), the reconciling statement and who states it, and ' +
+      'other passages with the same paradox. Filter by theme (motion_space, scale, knowing, agency, attributes, ' +
+      'one_many, birth, being_nonbeing, deep_sleep, identity_difference, other), mode (upAdhikRta, avidyAkalpita, ' +
+      'upAsanArtha, iva, dRShTi, svena_rUpeNa, niSedha, viduSAm_aviduSAm, different_respects, cause_effect, other), ' +
+      'parihara_source (bhashya | mula | tika | implicit), text, ref_prefix or keyword.',
+    parameters: { type: 'object', properties: {
+      theme: { type: 'string', description: 'paradox theme, e.g. motion_space, scale, knowing, agency, attributes, birth, deep_sleep.' },
+      mode: { type: 'string', description: 'how a side is grounded, e.g. upAdhikRta, iva, upAsanArtha, dRShTi, svena_rUpeNa.' },
+      parihara_source: { type: 'string', description: 'who states the reconciliation: bhashya | mula | tika | implicit' },
+      text: { type: 'string', description: 'restrict to one text key, e.g. Isha, Brha, Gita, BS, Kathaka.' },
+      ref_prefix: { type: 'string', description: 'restrict to a chapter/division ref prefix, e.g. "13".' },
+      keyword: { type: 'string', description: 'Devanāgarī or English substring searched in the paradox line, side labels and parihāra.' },
+      limit: { type: 'integer' }, count_only: { type: 'boolean' },
+    } },
+  },
+  {
     name: 'find_mahavakya',
     description: 'Find the mahāvākyas / identity equations (jīva=brahman "great sayings") in the corpus — a ' +
       'human-verified śāstric catalog (188 verses across 16 texts + VS). Each hit reports its sub-type and a ' +
@@ -623,7 +670,7 @@ const TOOL_SCHEMAS = [
     parameters: { type: 'object', properties: {
       facet: { type: 'string', description: 'one of: case, vibhakti_sutra, vibhakti_type, vacana, linga, lemma, karaka_role, dhatu, voice, ' +
         'transitivity, clause_type, clause_count, krt_pratyaya, taddhita_pratyaya, samasa_category, samasa_type, sutra, ' +
-        'sandhi_rule, relation, bhasya_role, mahavakya, text, chapter. ' +
+        'sandhi_rule, relation, bhasya_role, mahavakya, virodha_theme, virodha_mode, virodha_source, text, chapter. ' +
         '(vibhakti_sutra/vibhakti_type = the two-layer rule ordaining a word’s CASE, e.g. 2.3.29 anya-yoge; VC+AB only so far.)' },
       text: { type: 'string' },
       ref_prefix: { type: 'string', description: 'restrict to a chapter/division ref prefix, e.g. "6" = VS taraṅga 6.' },
@@ -658,7 +705,7 @@ const TOOL_SCHEMAS = [
 
 // map name -> fn for a generic dispatcher (handy for a function-calling loop)
 const TOOLS = { query_words, find_compounds, find_sandhi, find_relational, find_clauses,
-  find_mahavakya, search_bhasya, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
+  find_mahavakya, find_virodha, search_bhasya, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
 function callTool(c, name, args) {
   const fn = TOOLS[name];
   if (!fn) throw new Error('unknown tool: ' + name);
@@ -667,4 +714,4 @@ function callTool(c, name, args) {
 
 module.exports = { loadCorpus, TOOL_SCHEMAS, TOOLS, callTool,
   query_words, find_compounds, find_sandhi, find_relational, find_clauses,
-  find_mahavakya, search_bhasya, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
+  find_mahavakya, find_virodha, search_bhasya, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
