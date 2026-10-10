@@ -44,6 +44,48 @@ function contains(hay, needle) {
   if (hay == null || needle == null) return false;
   return String(hay).indexOf(String(needle)) !== -1;
 }
+// ---------------------------------------------------------------------------
+// SPELLING-TOLERANT keyword matching (search_bhasya, search_moola tier 4, find_discussions).
+// The bhāṣya is running sandhi'd prose, so a word's initial vowel is often FUSED onto the preceding consonant:
+// आनन्द appears as ब्रह्मानन्द / परमानन्द / सैषानन्दस्य — spelled with the mātrā ा, which a plain substring
+// search for "आनन्द" misses (2026-10-11: 90 of the 174 ānanda passages). So a query is compiled into a regex:
+//   • a word-initial independent vowel also matches its mātrā (आ↔ा, इ↔ि, ई↔ी, उ↔ु, ऊ↔ू, ऋ↔ृ, ए↔े, ऐ↔ै, ओ↔ो, औ↔ौ)
+//     — ONLY when ≥3 characters follow it in that word, so short particles stay exact (इति must not match स्थिति);
+//   • anusvāra ≡ candrabindu ≡ a nasal+virāma before a consonant (संशय ≡ सँशय, सम्शय);
+//   • avagraha ऽ is ignored on both sides (folded out of the text before matching).
+// अ has no mātrā, so it stays literal. Deterministic; no sandhi engine.
+// ---------------------------------------------------------------------------
+const VOWEL_MATRA = { 'आ': 'ा', 'इ': 'ि', 'ई': 'ी', 'उ': 'ु', 'ऊ': 'ू', 'ऋ': 'ृ', 'ए': 'े', 'ऐ': 'ै', 'ओ': 'ो', 'औ': 'ौ' };
+const NASAL_ALT = '(?:[ंँ]|[ङञणनम]्)';
+const reEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const spellFold = s => String(s == null ? '' : s).replace(/ऽ/g, '');
+const _spellCache = new Map();
+function spellRegex(query) {
+  const q = spellFold(query).trim();
+  if (_spellCache.has(q)) return _spellCache.get(q);
+  const chars = Array.from(q);
+  let out = '';
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i], prev = chars[i - 1], next = chars[i + 1];
+    const wordStart = i === 0 || /\s/.test(prev);
+    if (wordStart && VOWEL_MATRA[ch]) {
+      let rest = 0; for (let j = i + 1; j < chars.length && !/\s/.test(chars[j]); j++) rest++;
+      out += rest >= 3 ? '[' + ch + VOWEL_MATRA[ch] + ']' : ch;
+    } else if (ch === 'ं' || ch === 'ँ') out += NASAL_ALT;
+    else if (/[ङञणनम]/.test(ch) && next === '्' && chars[i + 2] && /[क-ह]/.test(chars[i + 2])) { out += NASAL_ALT; i++; }
+    else if (/\s/.test(ch)) { if (!/\\s\+$/.test(out)) out += '\\s+'; }
+    else out += reEsc(ch);
+  }
+  const re = new RegExp(out, 'g');
+  _spellCache.set(q, re);
+  return re;
+}
+function spellCount(hay, query) {
+  if (hay == null || query == null || !String(query).trim()) return 0;
+  const m = spellFold(hay).match(spellRegex(query));
+  return m ? m.length : 0;
+}
+const spellContains = (hay, query) => spellCount(hay, query) > 0;
 function eqOrIn(val, filter) {
   // filter may be a string (exact) or array (any-of)
   if (Array.isArray(filter)) return filter.includes(val);
@@ -304,15 +346,15 @@ function search_bhasya(c, a) {
       if (a.role) spans = spans.filter(s => s.role === a.role);
       if (a.role && !spans.length) continue;
       if (a.keyword) {
-        const inSpans = spans.filter(s => contains(s.text, a.keyword));
-        const inFull = contains(b.text, a.keyword);
+        const inSpans = spans.filter(s => spellContains(s.text, a.keyword));
+        const inFull = spellContains(b.text, a.keyword);
         if (a.role) { if (!inSpans.length) continue; spans = inSpans; }
         else if (!inFull) continue;
       }
       hits.push(Object.assign(citeVerse(v), {
         variant: b.variant || null,
         matchedSpans: (a.role || a.keyword)
-          ? spans.filter(s => !a.keyword || contains(s.text, a.keyword))
+          ? spans.filter(s => !a.keyword || spellContains(s.text, a.keyword))
                  .map(s => ({ role: s.role, text: s.text })).slice(0, 20)
           : undefined,
         roleCounts: b.spans.reduce((m, s) => (m[s.role] = (m[s.role] || 0) + 1, m), {}),
@@ -321,6 +363,113 @@ function search_bhasya(c, a) {
     }
   }
   return envelope(hits, a);
+}
+
+// ===========================================================================
+// TOOL: find_discussions — "where does the bhāṣya DISCUSS X?" (a vicāra, not a passing mention)
+// ===========================================================================
+// Deterministic candidate finder; the chat model makes the final vicāra-vs-mention call from the key sentences.
+//   1. per bhāṣya passage: spelling-tolerant occurrences of ANY keyword (pass synonyms: आनन्द + सुख);
+//   2. MERGE consecutive bhāṣya passages of the same text (+variant) that each have hits into one discussion
+//      (BS 1.1.12–19 = one ānandamaya-adhikaraṇa unit). `bridge` (default 0) lets a chain jump that many hit-less
+//      passages — bridging chains passing mentions together (VC 407–429, Taitt 2.1–2.9), so it is off by default.
+//      The corpus carries no adhikaraṇa boundaries, so BS merges by consecutive sūtras too;
+//   3. signals: occurrences, density per 1000 chars, pūrvapakṣa/siddhānta/ekadeśī spans containing a keyword, and
+//      INQUIRY MARKERS (संशय, विचार्यते/विचारणा, मीमांसा, ननु, इति चेत्/चेन्न, उच्यते, किम्…उत) counted only inside the
+//      keyword's own excerpt windows (a marker elsewhere in a long passage is about something else);
+//   4. score = 2·log2(1+occurrences) + 0.3·min(density,15) + 1.5·min(roleSpans,10) + 2·min(markerWindows,6).
+const INQUIRY_MARKERS = [
+  ['saṃśaya', /संशय/g], ['vicāra', /विचार(?:्यते|णा|्य|ः)/g], ['mīmāṃsā', /मीमांस/g],
+  ['nanu', /(?:^|[\s—‘'"(])(?:ननु|नन्व)/g], ['iti-cet', /इति\s*चे(?:त्|न्न|द्|च्छ)/g], ['ucyate', /उच्यते/g],
+  ['kim…uta', /कि(?:म्|मि|मु|ं)[^।॥?]{0,160}\sउत\s/g],
+];
+const DISC_ROLES = ['purvapaksha', 'siddhanta', 'ekadeshi'];
+function excerptWindows(text, kws) {
+  // one window per keyword hit: its sentence (split on । ॥ ?) when ≤300 chars, else ±150 chars snapped to spaces;
+  // a hit inside an earlier window doesn't open a new one
+  const wins = [];
+  for (const kw of kws) {
+    const re = new RegExp(spellRegex(kw).source, 'g'); let m;
+    while ((m = re.exec(text))) {
+      const at = m.index;
+      if (wins.some(w => at >= w.s && at < w.e)) continue;
+      let s = Math.max(text.lastIndexOf('।', at), text.lastIndexOf('॥', at), text.lastIndexOf('?', at)) + 1;
+      let e = text.slice(at).search(/[।॥?]/); e = e < 0 ? text.length : at + e + 1;
+      if (e - s > 300) {
+        s = Math.max(0, at - 150); e = Math.min(text.length, at + 150);
+        const sp = text.indexOf(' ', s); if (sp > 0 && sp < at) s = sp + 1;
+        const ep = text.lastIndexOf(' ', e); if (ep > at + m[0].length) e = ep;
+      }
+      wins.push({ s, e, kw });
+    }
+  }
+  return wins.sort((x, y) => x.s - y.s).map(w => Object.assign(w, { text: text.slice(w.s, w.e).trim() }));
+}
+function find_discussions(c, a) {
+  a = a || {};
+  const kws = (Array.isArray(a.keywords) ? a.keywords : [a.keywords || a.keyword]).filter(k => k && String(k).trim()).map(String);
+  if (!kws.length) return { error: 'find_discussions needs keywords: ["आनन्द", …]' };
+  // 1. per-passage stats, grouped by text+variant in corpus order
+  const seqs = new Map();
+  for (const v of verses(c, a.text, a.ref_prefix)) {
+    for (const b of (v.bhasya || [])) {
+      const key = v.text + '|' + (b.variant || '');
+      if (!seqs.has(key)) seqs.set(key, []);
+      const text = spellFold(b.text || '');
+      const occ = kws.reduce((n, k) => n + spellCount(text, k), 0);
+      seqs.get(key).push({ v, b, text, occ });
+    }
+  }
+  // 2. merge consecutive hit passages (bridge ≤ a.bridge hit-less passages; default 0)
+  const bridge = Math.max(0, a.bridge == null ? 0 : +a.bridge || 0);
+  const discs = [];
+  for (const [key, seq] of seqs) {
+    let cur = null, gap = 0;
+    for (const p of seq) {
+      if (p.occ > 0) {
+        if (cur && gap <= bridge) { cur.parts.push(...cur.pending, p); cur.pending = []; }
+        else { cur = { key, parts: [p], pending: [] }; discs.push(cur); }
+        gap = 0;
+      } else if (cur) { gap++; if (gap <= bridge) cur.pending.push(p); else { cur.pending = []; cur = null; } }
+    }
+  }
+  // 3. signals + score + key sentences
+  const out = discs.map(d => {
+    const parts = d.parts, first = parts[0], last = parts[parts.length - 1];
+    let occ = 0, chars = 0; const roles = {}, markers = {}; let markerWindows = 0; const cands = [];
+    for (const p of parts) {
+      occ += p.occ; chars += p.text.length;
+      const roleSpans = (p.b.spans || []).filter(s => DISC_ROLES.includes(s.role) && kws.some(k => spellContains(s.text, k)));
+      for (const s of roleSpans) roles[s.role] = (roles[s.role] || 0) + 1;
+      if (!p.occ) continue;
+      for (const w of excerptWindows(p.text, kws)) {
+        let mk = 0;
+        for (const [name, re] of INQUIRY_MARKERS) { const n = (w.text.match(re) || []).length; if (n) { markers[name] = (markers[name] || 0) + n; mk++; } }
+        if (mk) markerWindows++;
+        const inRole = roleSpans.some(s => w.text.includes(spellFold(s.text).slice(0, 24)) || spellFold(s.text).includes(w.text.slice(0, 24)));
+        const hits = kws.reduce((n, k) => n + spellCount(w.text, k), 0);
+        cands.push({ ref: p.v.ref, text: w.text, rank: mk * 3 + (inRole ? 2 : 0) + hits, marker: mk > 0, role: inRole });
+      }
+    }
+    const roleSpans = Object.values(roles).reduce((x, y) => x + y, 0);
+    const density = chars ? occ * 1000 / chars : 0;
+    const score = 2 * Math.log2(1 + occ) + 0.3 * Math.min(density, 15) + 1.5 * Math.min(roleSpans, 10) + 2 * Math.min(markerWindows, 6);
+    const keySentences = cands.sort((x, y) => y.rank - x.rank).slice(0, 3)
+      .map(k => ({ ref: k.ref, text: k.text.length > 320 ? k.text.slice(0, 320) + '…' : k.text, inquiryMarker: k.marker, inRoleSpan: k.role }));
+    const refs = parts.map(p => p.v.ref);
+    return {
+      text: first.v.text, variant: first.b.variant || null,
+      refRange: refs.length > 1 ? first.v.ref + '–' + last.v.ref : first.v.ref, refs,
+      score: Math.round(score * 10) / 10,
+      signals: { occurrences: occ, passages: parts.length, chars, densityPer1k: Math.round(density * 10) / 10, roleSpans: roles, inquiryMarkers: markers, markerWindows },
+      keySentences,
+    };
+  }).filter(d => a.min_score == null || d.score >= a.min_score)
+    .sort((x, y) => y.score - x.score);
+  const lim = a.limit == null ? 15 : a.limit;
+  const res = { keywords: kws, count: out.length, discussions: lim >= 0 ? out.slice(0, lim) : out };
+  if (lim >= 0 && out.length > lim) res.truncated = true;
+  return res;
 }
 
 // ===========================================================================
@@ -480,6 +629,8 @@ function search_moola(c, a) {
       const nraw = moolaNorm(raw);
       if (tokens.every(t => nraw.indexOf(t) !== -1)) mode = 'tokens';
     }
+    // tier 4 — spelling-tolerant (initial vowel ≡ its mātrā, anusvāra ≡ nasal+virāma, avagraha ignored) on the raw mūla
+    if (!mode && spellContains(raw, phrase)) mode = 'spelling';
     if (!mode) continue;
     // snippet: ±50 chars around the exact match when we have an offset, else the mūla head
     const snippet = at >= 0
@@ -631,10 +782,34 @@ const TOOL_SCHEMAS = [
       'ekadeshi. Coverage: Gita, BS, 10 upaniṣads (Kena has pada- & vākya-bhāṣya variants), and VC ' +
       '(Candraśekhara-bhāṣya, 477 verses). PD/AB have none.',
     parameters: { type: 'object', properties: {
-      keyword: { type: 'string', description: 'Devanāgarī substring to find in the bhāṣya.' },
+      keyword: { type: 'string', description: 'Devanāgarī keyword to find in the bhāṣya. Spelling-tolerant: a word-initial vowel also matches its fused mātrā form (आनन्द finds ब्रह्मानन्द, सैषानन्दस्य; only when ≥3 letters follow, so इति stays exact), anusvāra ≡ nasal+virāma, avagraha ignored. To find DISCUSSIONS of a topic use find_discussions.' },
       role: { type: 'string', description: 'restrict to spans of this rhetorical role.' },
       text: { type: 'string' }, limit: { type: 'integer' }, count_only: { type: 'boolean' },
     } },
+  },
+  {
+    name: 'find_discussions',
+    description: 'WHERE DOES THE BHĀṢYA DISCUSS a topic (a vicāra), as opposed to merely mentioning a word? Use for ' +
+      '"which places in the bhāṣya do a vicāra on ānanda / on karma / …". Ranks candidate DISCUSSIONS: consecutive ' +
+      'bhāṣya passages (same text) that contain any keyword are merged into one unit (e.g. BS 1.1.12–1.1.19 comes back ' +
+      'as one), then scored = 2·log2(1+occurrences) + 0.3·min(density per 1000 chars, 15) + 1.5·min(pūrvapakṣa/' +
+      'siddhānta/ekadeśī spans containing a keyword, 10) + 2·min(excerpts containing an inquiry marker, 6). Inquiry ' +
+      'markers: संशय, विचार्यते/विचारणा, मीमांसा, ननु, इति चेत्/चेन्न, उच्यते, किम्…उत — counted only inside the ' +
+      'keyword\'s own excerpt. Each discussion returns its signals and up to 3 KEY SENTENCES. Matching is ' +
+      'spelling-tolerant (आनन्द also finds ब्रह्मानन्द / सैषानन्दस्य). PASS SYNONYMS as separate keywords (e.g. ' +
+      '["आनन्द","सुख"] — the bhūmā-vidyā Chāndogya 7.23 says सुख, not आनन्द); note a broad synonym like सुख also pulls ' +
+      'in सुखदुःख passages. The score only ranks candidates: YOU must read the key sentences and decide which are real ' +
+      'vicāras (saṃśaya → pūrvapakṣa → siddhānta on the topic itself) vs. passing mentions or quotations, and say so. ' +
+      'Coverage = the bhāṣya in this corpus (Śaṅkara on BS, Gītā, 10 upaniṣads; Candraśekhara on VC) — not ' +
+      'Ānandagiri, vārttikas, or any PD/AB/SD/US/VS commentary.',
+    parameters: { type: 'object', properties: {
+      keywords: { type: 'array', items: { type: 'string' }, description: 'Devanāgarī keyword(s) / synonyms, e.g. ["आनन्द","सुख"].' },
+      text: { type: 'string', description: 'restrict to one text key, e.g. BS, Brha, Taitiriya, Gita, VC.' },
+      ref_prefix: { type: 'string', description: 'restrict to a chapter/division ref prefix, e.g. "1.1".' },
+      limit: { type: 'integer', description: 'max discussions (default 15; -1 = all).' },
+      min_score: { type: 'number', description: 'drop discussions scoring below this.' },
+      bridge: { type: 'integer', description: 'let a discussion jump this many hit-less passages (default 0; >0 merges passing mentions).' },
+    }, required: ['keywords'] },
   },
   {
     name: 'search_moola',
@@ -644,6 +819,7 @@ const TOOL_SCHEMAS = [
       'each hit reports matchMode (exact | normalized | tokens) plus a snippet and the full mūla. ' +
       'Covers ALL 14 texts + VS. NOTE: does not bridge vowel-sandhi across a word split — a single ' +
       'sandhi\'d word like आत्मैवेदं (=आत्मा एव इदम्) must be queried split or in padaccheda form. ' +
+      'A 4th tier, matchMode "spelling", tolerates a word-initial vowel written as a fused mātrā (आ≡ा …), anusvāra ≡ nasal+virāma and avagraha. ' +
       'For an exact (text, ref) lookup use get_verse; for grammatical word filters use query_words.',
     parameters: { type: 'object', properties: {
       phrase: { type: 'string', description: 'Devanāgarī phrase to find in the mūla, e.g. "इदं सर्वं यदयमात्मा" or "आत्मा एव इदम्".' },
@@ -705,7 +881,7 @@ const TOOL_SCHEMAS = [
 
 // map name -> fn for a generic dispatcher (handy for a function-calling loop)
 const TOOLS = { query_words, find_compounds, find_sandhi, find_relational, find_clauses,
-  find_mahavakya, find_virodha, search_bhasya, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
+  find_mahavakya, find_virodha, search_bhasya, find_discussions, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
 function callTool(c, name, args) {
   const fn = TOOLS[name];
   if (!fn) throw new Error('unknown tool: ' + name);
@@ -714,4 +890,4 @@ function callTool(c, name, args) {
 
 module.exports = { loadCorpus, TOOL_SCHEMAS, TOOLS, callTool,
   query_words, find_compounds, find_sandhi, find_relational, find_clauses,
-  find_mahavakya, find_virodha, search_bhasya, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
+  find_mahavakya, find_virodha, search_bhasya, find_discussions, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
