@@ -405,6 +405,19 @@ function excerptWindows(text, kws) {
   }
   return wins.sort((x, y) => x.s - y.s).map(w => Object.assign(w, { text: text.slice(w.s, w.e).trim() }));
 }
+// BS adhikaraṇa lookup (corpus.adhikaranas = VNM digests, verbatim). Cached per corpus object.
+const _adhCache = new WeakMap();
+function adhikaranaOf(c, text, ref) {
+  if (text !== 'BS' || !Array.isArray(c.adhikaranas)) return null;
+  let m = _adhCache.get(c);
+  if (!m) { m = new Map(); for (const a of c.adhikaranas) for (const r of a.refs || []) m.set(r, a); _adhCache.set(c, m); }
+  return m.get(String(ref)) || null;
+}
+function adhikaranaView(a) {
+  return a ? { name: a.name, pada: a.pada, ordinalInPada: a.k, refRange: a.first === a.last ? a.first : a.first + '–' + a.last,
+    vnm: a.vnm, viewLabels: a.vnm.filter(l => l.k === 'label' && /[एे]कदेशि|स्वमत|वृत्तिकार|सिद्धान्त/.test(l.t)).map(l => l.t) } : null;
+}
+
 function find_discussions(c, a) {
   a = a || {};
   const kws = (Array.isArray(a.keywords) ? a.keywords : [a.keywords || a.keyword]).filter(k => k && String(k).trim()).map(String);
@@ -424,6 +437,14 @@ function find_discussions(c, a) {
   const bridge = Math.max(0, a.bridge == null ? 0 : +a.bridge || 0);
   const discs = [];
   for (const [key, seq] of seqs) {
+    // BS: a discussion = an ADHIKARAṆA (VNM boundaries) — hit passages in the same adhikaraṇa merge even across
+    // hit-less sūtras, and never across an adhikaraṇa boundary. Passages outside any known adhikaraṇa fall through.
+    if (key.startsWith('BS|') && Array.isArray(c.adhikaranas)) {
+      const byAdh = new Map(), rest = [];
+      for (const p of seq) { if (!p.occ) continue; const ad = adhikaranaOf(c, 'BS', p.v.ref); if (ad) { const k = ad.pada + '#' + ad.k; if (!byAdh.has(k)) { const d = { key, parts: [], pending: [], adh: ad }; byAdh.set(k, d); discs.push(d); } byAdh.get(k).parts.push(p); } else rest.push(p); }
+      for (const p of rest) discs.push({ key, parts: [p], pending: [] });
+      continue;
+    }
     let cur = null, gap = 0;
     for (const p of seq) {
       if (p.occ > 0) {
@@ -469,6 +490,7 @@ function find_discussions(c, a) {
       signals: { occurrences: occ, passages: parts.length, chars, densityPer1k: Math.round(density * 10) / 10, roleSpans: roles, inquiryMarkers: markers, markerWindows },
       keySentences,
       closingSentences,
+      ...(d.adh ? { adhikarana: adhikaranaView(d.adh) } : {}),
     };
   }).filter(d => a.min_score == null || d.score >= a.min_score)
     .sort((x, y) => y.score - x.score);
@@ -590,7 +612,8 @@ function get_verse(c, a) {
   const ref = String(a.ref);
   const v = c.verses.find(x => x.text === a.text && (x.ref === ref || x.ref === normalizeRef(ref)));
   if (!v) return { found: false, text: a.text, ref: a.ref };
-  return { found: true, verse: v };
+  const ad = adhikaranaOf(c, v.text, v.ref);
+  return ad ? { found: true, verse: v, adhikarana: adhikaranaView(ad) } : { found: true, verse: v };
 }
 function normalizeRef(ref) {
   return String(ref).split('.').map(s => /^\d+$/.test(s.trim()) ? String(parseInt(s, 10)) : s.trim()).join('.');
@@ -804,7 +827,11 @@ const TOOL_SCHEMAS = [
       'keyword\'s own excerpt. Each discussion returns its signals, up to 3 KEY SENTENCES, and — for a multi-passage ' +
       'unit — CLOSING SENTENCES from its last passage. READ THE CLOSING SENTENCES BEFORE STATING A CONCLUSION: Śaṅkara ' +
       'may set out a view and overturn it at the end of the same unit (BS 1.1.12–18 argue ānandamaya = Brahman; 1.1.19 ' +
-      'rejects that — the referent is ‘ब्रह्म पुच्छं प्रतिष्ठा’). Matching is ' +
+      'rejects that — the referent is ‘ब्रह्म पुच्छं प्रतिष्ठा’). For BS, a unit = one ADHIKARAṆA and carries `adhikarana` ' +
+      '= the Vaiyāsika-nyāya-mālā digest VERBATIM (name, pāda, ordinal, kārikās, and VNM\'s own view labels such as ' +
+      '“…एकदेशिमतेन आह” / “इदानीं स्वमतानुसारेण…”): state as Śaṅkara\'s conclusion ONLY the view VNM gives as the ' +
+      'siddhānta / स्वमत — NEVER a view VNM labels एकदेशि (one-sided) or pūrvapakṣa; take adhikaraṇa names/positions ' +
+      'from this field, not from memory. Matching is ' +
       'spelling-tolerant (आनन्द also finds ब्रह्मानन्द / सैषानन्दस्य). PASS SYNONYMS as separate keywords (e.g. ' +
       '["आनन्द","सुख"] — the bhūmā-vidyā Chāndogya 7.23 says सुख, not आनन्द); note a broad synonym like सुख also pulls ' +
       'in सुखदुःख passages. The score only ranks candidates: YOU must read the key sentences and decide which are real ' +
