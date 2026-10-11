@@ -454,8 +454,13 @@ function find_discussions(c, a) {
     const roleSpans = Object.values(roles).reduce((x, y) => x + y, 0);
     const density = chars ? occ * 1000 / chars : 0;
     const score = 2 * Math.log2(1 + occ) + 0.3 * Math.min(density, 15) + 1.5 * Math.min(roleSpans, 10) + 2 * Math.min(markerWindows, 6);
-    const keySentences = cands.sort((x, y) => y.rank - x.rank).slice(0, 3)
-      .map(k => ({ ref: k.ref, text: k.text.length > 320 ? k.text.slice(0, 320) + '…' : k.text, inquiryMarker: k.marker, inRoleSpan: k.role }));
+    const fmt = k => ({ ref: k.ref, text: k.text.length > 320 ? k.text.slice(0, 320) + '…' : k.text, inquiryMarker: k.marker, inRoleSpan: k.role });
+    const keySentences = cands.slice().sort((x, y) => y.rank - x.rank).slice(0, 3).map(fmt);
+    // CLOSING sentences: the best key sentences of the unit's LAST passage. A multi-passage discussion may present a view
+    // and overturn it at the end (BS 1.1.12–18 argue ānandamaya = Brahman; 1.1.19 rejects that for 'ब्रह्म पुच्छं
+    // प्रतिष्ठा'), so the model must see where the unit ENDS before stating its conclusion (Harsha 2026-10-12).
+    const closingSentences = parts.length > 1
+      ? cands.filter(k => k.ref === last.v.ref).sort((x, y) => y.rank - x.rank).slice(0, 2).map(fmt) : [];
     const refs = parts.map(p => p.v.ref);
     return {
       text: first.v.text, variant: first.b.variant || null,
@@ -463,6 +468,7 @@ function find_discussions(c, a) {
       score: Math.round(score * 10) / 10,
       signals: { occurrences: occ, passages: parts.length, chars, densityPer1k: Math.round(density * 10) / 10, roleSpans: roles, inquiryMarkers: markers, markerWindows },
       keySentences,
+      closingSentences,
     };
   }).filter(d => a.min_score == null || d.score >= a.min_score)
     .sort((x, y) => y.score - x.score);
@@ -795,7 +801,10 @@ const TOOL_SCHEMAS = [
       'as one), then scored = 2·log2(1+occurrences) + 0.3·min(density per 1000 chars, 15) + 1.5·min(pūrvapakṣa/' +
       'siddhānta/ekadeśī spans containing a keyword, 10) + 2·min(excerpts containing an inquiry marker, 6). Inquiry ' +
       'markers: संशय, विचार्यते/विचारणा, मीमांसा, ननु, इति चेत्/चेन्न, उच्यते, किम्…उत — counted only inside the ' +
-      'keyword\'s own excerpt. Each discussion returns its signals and up to 3 KEY SENTENCES. Matching is ' +
+      'keyword\'s own excerpt. Each discussion returns its signals, up to 3 KEY SENTENCES, and — for a multi-passage ' +
+      'unit — CLOSING SENTENCES from its last passage. READ THE CLOSING SENTENCES BEFORE STATING A CONCLUSION: Śaṅkara ' +
+      'may set out a view and overturn it at the end of the same unit (BS 1.1.12–18 argue ānandamaya = Brahman; 1.1.19 ' +
+      'rejects that — the referent is ‘ब्रह्म पुच्छं प्रतिष्ठा’). Matching is ' +
       'spelling-tolerant (आनन्द also finds ब्रह्मानन्द / सैषानन्दस्य). PASS SYNONYMS as separate keywords (e.g. ' +
       '["आनन्द","सुख"] — the bhūmā-vidyā Chāndogya 7.23 says सुख, not आनन्द); note a broad synonym like सुख also pulls ' +
       'in सुखदुःख passages. The score only ranks candidates: YOU must read the key sentences and decide which are real ' +

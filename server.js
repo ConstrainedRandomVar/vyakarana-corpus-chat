@@ -69,6 +69,11 @@ HARD RULES
    • BS is bhāṣya-only. • BG kāraka = UoHyd e-reader (~57% reliable); for hetau-pañcamī prefer the bhāṣya route.
    • Some Upaniṣads carry two ref schemes; word-hit vs relation-hit may cite different refs — both are true.
    • VC voice values are partly garbled in the source (e.g. "कर्तरi") — treat as noise.
+4a. SCRIPT + QUOTES. Write Sanskrit ONLY in Devanāgarī, or in IAST (Latin letters with standard diacritics) — never
+   Arabic/Perso-Arabic, Hebrew, Cyrillic or any other script, and no stray combining marks. Every Sanskrit QUOTE must
+   be copied character-for-character from a tool result (an excerpt / key sentence / context) — never retyped,
+   reconstructed or "corrected" from memory; if you have no tool excerpt for it, paraphrase without quotation marks.
+   Do not coin Sanskrit glosses or technical terms that are not in the tool output.
 4. USE DEVANĀGARĪ for all grammatical facet values (cases, roles, pratyayas, samāsa types).
 5. DISCOVER first with list_values(facet) if unsure what values exist.
 5a. "Where does the bhāṣya DISCUSS / do a vicāra on X?" → find_discussions with the term AND its synonyms as separate
@@ -76,6 +81,12 @@ HARD RULES
    say which are real vicāras (saṃśaya / pūrvapakṣa / siddhānta on the topic itself) and which are passing mentions or
    quotations — the score alone does not decide. search_bhasya / search_moola are spelling-tolerant (आनन्द also matches
    the fused ब्रह्मानन्द, सैषानन्दस्य), so don't re-query the mātrā form.
+   DISCUSSION ANSWERS (find_discussions): (i) do NOT restrict to one text unless the user asks — rank across every
+   text the tool returns (e.g. for ānanda the Taittirīya 2.5–2.9 unit — ānandamaya kośa + ānanda-mīmāṃsā — belongs
+   near the top, beside BS 1.1.12–19 and Bṛhad 3.9.28); (ii) before stating a unit's conclusion, READ its
+   closingSentences — Śaṅkara may present a view and overturn it at the end (BS 1.1.12–18 argue ānandamaya = Brahman;
+   1.1.19 rejects it: the referent is ‘ब्रह्म पुच्छं प्रतिष्ठा’, the ānandamaya is a kośa); state the FINAL position;
+   (iii) do not name adhikaraṇas or their position ("the opening adhikaraṇa") from memory — only what the tool shows.
 6. Prefer 3–8 vivid cited examples + the true total (use count_only/count_by) over dumping everything; say how many matched.
 7. FORMAT answers in plain Markdown (headings, **bold**, bullet/numbered lists). Do NOT use LaTeX or math notation — no $...$, \\rightarrow, \\sqrt, \\text, \\ge, \\le. Use plain Unicode instead: → ⇒ ≥ ≤ × · √. Show a samāsa peel as layer → layer → layer.
 
@@ -145,6 +156,14 @@ function trimResult(res) {
 }
 
 // ---- the agentic loop: ask → (functionCall → run tool → functionResponse)* → text
+// Scripts that must never appear in an answer: Hebrew, Arabic (+ supplements/presentation forms), Syriac, Cyrillic; and a
+// combining dot-above / dot-below glued onto a Latin letter where IAST has a precomposed letter (the "tasmi̇nn" slip).
+const FOREIGN = /[\u0590-\u05FF\u0600-\u06FF\u0700-\u074F\u0750-\u077F\u08A0-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF\u0400-\u04FF]|[A-Za-z]\u0307/;
+function maskForeign(t) {
+  return t.replace(/[\u0590-\u05FF\u0600-\u06FF\u0700-\u074F\u0750-\u077F\u08A0-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF\u0400-\u04FF][\u0590-\u05FF\u0600-\u06FF\u0700-\u074F\u0750-\u077F\u08A0-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF\u0400-\u04FF\s]*/g, '[script error removed] ')
+          .replace(/([A-Za-z])\u0307/g, '$1');
+}
+
 async function ask(question) {
   const contents = [{ role: 'user', parts: [{ text: question }] }];
   const trace = [];
@@ -152,7 +171,18 @@ async function ask(question) {
     const { content } = await generate(contents);
     const parts = content.parts || [];
     const calls = parts.filter(p => p.functionCall).map(p => p.functionCall);
-    if (!calls.length) return { answer: parts.map(p => p.text || '').join('').trim(), trace };
+    if (!calls.length) {
+      const answer = parts.map(p => p.text || '').join('').trim().normalize('NFC');   // NFC: decomposed ṁ/ṇ → precomposed, not flagged
+      // SCRIPT GUARD (Harsha 2026-10-12: रसो वै सः came back in Arabic letters). Sanskrit must be Devanāgarī or IAST: on a
+      // foreign-script run or a stray combining dot (e.g. "tasmi̇nn") ask ONCE for a rewrite; whatever survives is masked.
+      if (FOREIGN.test(answer) && !trace.some(t => t.rewrite)) {
+        trace.push({ rewrite: true });
+        contents.push({ role: 'model', parts: [{ text: answer }] });
+        contents.push({ role: 'user', parts: [{ text: 'Your answer contains text in a script other than Devanāgarī / IAST (e.g. Arabic letters or a stray combining mark). Rewrite the SAME answer: Sanskrit only in Devanāgarī or IAST, and every Sanskrit quote copied character-for-character from the tool results above.' }] });
+        continue;
+      }
+      return { answer: maskForeign(answer), trace };
+    }
     contents.push({ role: 'model', parts });
     const respParts = [];
     for (const fc of calls) {
@@ -215,6 +245,8 @@ ${PASSWORD ? '<div class="pw">Access code: <input id="pw" type="password" placeh
 <button>Which text uses कर्मणि voice most?</button>
 <button>Examples of hetau-pañcamī in the Bhagavad-gītā bhāṣya.</button>
 <button>What kāraka roles exist, and how frequent is हेतुः?</button>
+<button>Where does the bhāṣya carry out a vicāra on ānanda? Name the top discussions, with their conclusions.</button>
+<button>Outside the Brahmasūtra, where does Śaṅkara discuss karma vs jñāna? Top 5, with key sentences.</button>
 </div>
 <div id="log"></div>
 </div>
