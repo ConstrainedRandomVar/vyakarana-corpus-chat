@@ -413,9 +413,36 @@ function adhikaranaOf(c, text, ref) {
   if (!m) { m = new Map(); for (const a of c.adhikaranas) for (const r of a.refs || []) m.set(r, a); _adhCache.set(c, m); }
   return m.get(String(ref)) || null;
 }
+// VNM convention (verified: 183/191 adhikaraṇas = 2 ślokas, 7 = 4, 1 = 1): each VIEW is set out in two ślokas — the
+// first states the saṃśaya + pūrvapakṣa, the second the siddhānta of that view. A view VNM introduces as एकदेशि-मत is
+// a one-sided reading, NOT the bhāṣyakāra's; "इदानीं स्वमतानुसारेण…" opens Śaṅkara's own. So the explicit
+// structure below is a mechanical reading of VNM's own layout + labels, and `finalPosition` = the siddhānta śloka of the
+// last non-एकदेशि view (Harsha 2026-10-12: flash-lite took the ekadeśī's answer, VNM kārikā 26, for Śaṅkara's).
+function vnmStructure(vnm) {
+  const groups = [{ label: null, kind: 'main', slokas: [] }];
+  let buf = [];
+  for (const l of vnm) {
+    if (l.k === 'label' && /[एे]कदेशि/.test(l.t)) { groups.push({ label: l.t, kind: 'ekadeshi', slokas: [] }); continue; }
+    if (l.k === 'label' && /स्वमत/.test(l.t)) { groups.push({ label: l.t, kind: 'svamata', slokas: [] }); continue; }
+    if (l.k !== 'karika') continue;
+    buf.push(l.t);
+    if (l.end || /॥\s*[०-९0-9]+\s*॥\s*$/.test(l.t)) { groups[groups.length - 1].slokas.push(buf.join(' ')); buf = []; }
+  }
+  if (buf.length) groups[groups.length - 1].slokas.push(buf.join(' '));
+  const views = groups.filter(g => g.slokas.length).map(g => ({
+    view: g.kind === 'ekadeshi' ? 'एकदेशिमत — a one-sided view VNM records; NOT Śaṅkara\'s conclusion'
+        : g.kind === 'svamata' ? 'स्वमत — Śaṅkara\'s own view (the bhāṣyakāra\'s siddhānta)' : 'the adhikaraṇa (pūrvapakṣa → siddhānta)',
+    vnmLabel: g.label, purvapakshaSloka: g.slokas.length > 1 ? g.slokas[0] : null, siddhantaSloka: g.slokas[g.slokas.length - 1],
+    ...(g.slokas.length > 2 ? { allSlokas: g.slokas } : {}),
+  }));
+  const fin = views.filter(v => !/^एकदेशि/.test(v.view)).pop() || null;
+  return { views, finalPosition: fin ? { sloka: fin.siddhantaSloka, note: 'VNM: the concluding (siddhānta) śloka of Śaṅkara\'s own view for this adhikaraṇa — state THIS as the conclusion' } : null };
+}
 function adhikaranaView(a) {
-  return a ? { name: a.name, pada: a.pada, ordinalInPada: a.k, refRange: a.first === a.last ? a.first : a.first + '–' + a.last,
-    vnm: a.vnm, viewLabels: a.vnm.filter(l => l.k === 'label' && /[एे]कदेशि|स्वमत|वृत्तिकार|सिद्धान्त/.test(l.t)).map(l => l.t) } : null;
+  if (!a) return null;
+  const st = vnmStructure(a.vnm || []);
+  return { name: a.name, pada: a.pada, ordinalInPada: a.k, refRange: a.first === a.last ? a.first : a.first + '–' + a.last,
+    finalPosition: st.finalPosition, views: st.views, vnm: a.vnm };
 }
 
 function find_discussions(c, a) {
