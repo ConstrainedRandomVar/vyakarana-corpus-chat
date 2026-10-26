@@ -1,6 +1,7 @@
 # Render Blueprint — one-click config for the Vyākaraṇa Corpus Assistant.
 # Render → New → Blueprint → connect this repo → it reads this file.
-# You'll be prompted to enter GEMINI_API_KEY (it is NOT stored in the repo).
+# Two services from one codebase: the Gemini one (free tier) and the Claude one (paid, password-gated).
+# You'll be prompted for the secrets (API keys, access code) — they are NOT stored in the repo.
 services:
   - type: web
     name: vyakarana-corpus-chat
@@ -17,3 +18,23 @@ services:
         value: gemini-3.5-flash-lite   # free tier: 15 RPM / 500 RPD (vs 3.6-flash's 5 RPM / 20 RPD)
       # - key: ACCESS_PASSWORD  # uncomment + set in dashboard to gate the app
       #   sync: false
+
+  - type: web
+    name: vyakarana-corpus-chat-claude
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: LLM_PROVIDER
+        value: anthropic
+      - key: ANTHROPIC_API_KEY
+        sync: false            # paste in the Render dashboard (secret)
+      - key: ANTHROPIC_MODEL
+        value: claude-opus-5-5
+      - key: ANTHROPIC_EFFORT
+        value: high            # low | medium | high | xhigh | max — higher = more thorough, more tokens
+      - key: ACCESS_PASSWORD
+        sync: false            # the shared access code readers type on the page (secret)

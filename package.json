@@ -2,8 +2,15 @@
   "name": "vyakarana-corpus-assistant",
   "version": "1.0.0",
   "private": true,
-  "description": "Gemini function-calling chat over the Vyākaraṇa corpus (Hugging Face Space)",
+  "description": "Function-calling chat (Gemini or Claude) over the Vyākaraṇa corpus (Render)",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
-  "engines": { "node": ">=18" }
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0"
+  }
 }

@@ -1,19 +1,22 @@
 #!/usr/bin/env node
 // ===========================================================================
-// Vyākaraṇa Corpus Assistant — Hugging Face Space (Docker) web app.
+// Vyākaraṇa Corpus Assistant — Render web app.
 //
-// Serves a chat page + runs the Gemini FUNCTION-CALLING loop server-side over
+// Serves a chat page + runs the model's FUNCTION-CALLING loop server-side over
 // the deterministic corpus tools (corpus-tools.js) against corpus.json held in
 // memory. Every answer is grounded in real tool output — exact, cited, no
 // hallucinated numbers. This is corpus-chat.js turned into a shareable web app.
 //
-// AUTH (two modes, auto-detected):
+// PROVIDER (LLM_PROVIDER): 'gemini' (default) or 'anthropic'. One codebase, two Render services —
+//   the Claude one sets LLM_PROVIDER=anthropic + ANTHROPIC_API_KEY (+ ANTHROPIC_MODEL, ANTHROPIC_EFFORT).
+//
+// GEMINI AUTH (two modes, auto-detected):
 //   • GEMINI_API_KEY set  → Google AI Studio (Generative Language API) — the
 //     free-tier path used on Hugging Face. Set it as a Space *secret*.
 //   • else                → Vertex AI via a local `gcloud` access token (for
 //     running/testing on Harsha's machine; NOT available in the HF container).
 //
-// ENV: GEMINI_API_KEY, GEMINI_MODEL, PORT (HF uses 7860),
+// ENV: LLM_PROVIDER, GEMINI_API_KEY, GEMINI_MODEL, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_EFFORT, PORT,
 //      ACCESS_PASSWORD (optional gate), CORPUS_PATH, TOOLS_PATH,
 //      GEMINI_PROJECT/GEMINI_REGION (Vertex local mode only).
 // ===========================================================================
@@ -29,11 +32,15 @@ const corpus = T.loadCorpus(CORPUS_PATH);
 const stats = T.corpus_stats(corpus);
 
 const PORT = process.env.PORT || 7860;
+const PROVIDER = (process.env.LLM_PROVIDER || 'gemini').toLowerCase();
+const USE_CLAUDE = PROVIDER === 'anthropic';
 const API_KEY = process.env.GEMINI_API_KEY || '';
 const USE_AISTUDIO = !!API_KEY;
-const MODEL = process.env.GEMINI_MODEL || (USE_AISTUDIO ? 'gemini-3.5-flash-lite' : 'gemini-3.7-flash');
+const MODEL = USE_CLAUDE ? (process.env.ANTHROPIC_MODEL || 'claude-opus-5-5')
+  : (process.env.GEMINI_MODEL || (USE_AISTUDIO ? 'gemini-3.5-flash-lite' : 'gemini-3.7-flash'));
+const EFFORT = process.env.ANTHROPIC_EFFORT || 'high';   // low | medium | high | xhigh | max
 const PASSWORD = process.env.ACCESS_PASSWORD || '';
-const MAX_STEPS = 8;
+const MAX_STEPS = USE_CLAUDE ? 12 : 8;
 const MAX_ROWS_TO_MODEL = 40;
 
 // ---- Vertex (local) config -------------------------------------------------
@@ -202,6 +209,74 @@ async function ask(question) {
 }
 
 // ===========================================================================
+// Claude (LLM_PROVIDER=anthropic): same tools, same prompt, same script guard — Messages API tool-use loop.
+// System prompt + tool list are cached (they are identical for every question); the growing conversation
+// is cached too (top-level cache_control), so each loop step only pays full price for the new tool output.
+// Refusal fallback: server-side 'default' fallbacks re-run a declined request on another model in the same call.
+// ===========================================================================
+let claude = null, Anthropic = null;
+if (USE_CLAUDE) {
+  Anthropic = require('@anthropic-ai/sdk');
+  claude = new Anthropic({ maxRetries: 3, timeout: 10 * 60 * 1000 });   // reads ANTHROPIC_API_KEY
+}
+const claudeTools = () => T.TOOL_SCHEMAS.map(s => ({ name: s.name, description: s.description, input_schema: s.parameters }));
+
+async function claudeStep(messages) {
+  try {
+    const stream = claude.beta.messages.stream({
+      model: MODEL,
+      max_tokens: 32000,
+      system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+      tools: claudeTools(),
+      messages,
+      cache_control: { type: 'ephemeral' },
+      output_config: { effort: EFFORT },
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+    });
+    return await stream.finalMessage();
+  } catch (e) {
+    if (e instanceof Anthropic.RateLimitError) throw new Error('The assistant is busy right now. Please wait a minute and ask again.');
+    if (e instanceof Anthropic.APIError) throw new Error('Claude: ' + e.message);
+    throw e;
+  }
+}
+
+async function askClaude(question) {
+  const messages = [{ role: 'user', content: question }];
+  const trace = [];
+  for (let step = 0; step < MAX_STEPS; step++) {
+    const msg = await claudeStep(messages);
+    if (msg.stop_reason === 'refusal') return { answer: 'The model declined to answer this question.', trace };
+    if (msg.stop_reason === 'pause_turn') { messages.push({ role: 'assistant', content: msg.content }); continue; }
+    const calls = msg.content.filter(b => b.type === 'tool_use');
+    if (!calls.length) {
+      const answer = msg.content.filter(b => b.type === 'text').map(b => b.text).join('').trim().normalize('NFC');
+      if (msg.stop_reason === 'max_tokens' && !answer) return { answer: '(stopped: answer too long)', trace };
+      // SCRIPT GUARD — same rule as the Gemini loop: one rewrite, then mask.
+      if (FOREIGN.test(answer) && !trace.some(t => t.rewrite)) {
+        trace.push({ rewrite: true });
+        messages.push({ role: 'assistant', content: msg.content });
+        messages.push({ role: 'user', content: 'Your answer contains text in a script other than Devanāgarī / IAST (e.g. Arabic letters or a stray combining mark). Rewrite the SAME answer: Sanskrit only in Devanāgarī or IAST, and every Sanskrit quote copied character-for-character from the tool results above.' });
+        continue;
+      }
+      return { answer: maskForeign(answer), trace };
+    }
+    if (msg.stop_reason === 'max_tokens') return { answer: '(stopped: a tool call was cut off — try a narrower question)', trace };
+    messages.push({ role: 'assistant', content: msg.content });
+    const results = calls.map(c => {
+      let r, isErr = false;
+      try { r = trimResult(T.callTool(corpus, c.name, c.input || {})); }
+      catch (e) { r = { error: String(e.message || e) }; isErr = true; }
+      trace.push({ tool: c.name, args: c.input || {}, count: r && r.count });
+      return { type: 'tool_result', tool_use_id: c.id, content: JSON.stringify(r), ...(isErr ? { is_error: true } : {}) };
+    });
+    messages.push({ role: 'user', content: results });
+  }
+  return { answer: '(stopped: exceeded tool-step limit)', trace };
+}
+
+// ===========================================================================
 // HTTP server
 // ===========================================================================
 const nText = Object.values(stats.texts).length;
@@ -263,11 +338,13 @@ const log=document.getElementById('log'),q=document.getElementById('q'),s=docume
 function add(cls,txt){const d=document.createElement('div');d.className='msg '+cls;d.textContent=txt;log.appendChild(d);d.scrollIntoView({behavior:'smooth',block:'end'});return d;}
 function renderMd(el,text){ if(window.marked&&window.DOMPurify){ el.innerHTML=DOMPurify.sanitize(marked.parse(String(text))); } else { el.textContent=text; } el.scrollIntoView({behavior:'smooth',block:'end'}); }
 document.querySelectorAll('.ex button').forEach(b=>b.onclick=()=>{q.value=b.textContent;q.focus();});
+const pwEl=document.getElementById('pw');if(pwEl){try{pwEl.value=localStorage.getItem('cc_pw')||'';}catch(e){}}
 f.onsubmit=async e=>{e.preventDefault();const question=q.value.trim();if(!question)return;
   add('u',question);q.value='';s.disabled=true;const pend=add('a','…thinking…');
   try{const pw=document.getElementById('pw');
     const r=await fetch('chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:question,pw:pw?pw.value:''})});
     const d=await r.json();
+    if(pw){try{if(r.status===401)localStorage.removeItem('cc_pw');else localStorage.setItem('cc_pw',pw.value);}catch(e){}}
     if(d.error){pend.textContent='⚠ '+d.error;}
     else{renderMd(pend,d.answer||'(no answer)');
       if(d.trace&&d.trace.length){const t=document.createElement('div');t.className='trace';t.textContent='tools: '+d.trace.map(x=>x.tool).join(' → ');pend.appendChild(t);}}
@@ -282,7 +359,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(PAGE); return;
   }
-  if (req.method === 'GET' && req.url === '/health') { send(res, 200, { ok: true, model: MODEL, aistudio: USE_AISTUDIO, texts: nText }); return; }
+  if (req.method === 'GET' && req.url === '/health') { send(res, 200, { ok: true, provider: PROVIDER, model: MODEL, aistudio: USE_AISTUDIO, texts: nText }); return; }
   if (req.method === 'POST' && req.url === '/chat') {
     let body = '';
     req.on('data', d => { body += d; if (body.length > 1e5) req.destroy(); });
@@ -292,11 +369,11 @@ const server = http.createServer((req, res) => {
       if (PASSWORD && q.pw !== PASSWORD) return send(res, 401, { error: 'wrong access code' });
       const question = (q.q || '').toString().slice(0, 2000).trim();
       if (!question) return send(res, 400, { error: 'empty question' });
-      try { const r = await ask(question); send(res, 200, r); }
+      try { const r = await (USE_CLAUDE ? askClaude(question) : ask(question)); send(res, 200, r); }
       catch (e) { send(res, 500, { error: String(e.message || e) }); }
     });
     return;
   }
   send(res, 404, { error: 'not found' });
 });
-server.listen(PORT, () => console.log(`Vyākaraṇa Corpus Assistant on :${PORT} | model=${MODEL} | aistudio=${USE_AISTUDIO} | ${nText} texts, ${nWords} words`));
+server.listen(PORT, () => console.log(`Vyākaraṇa Corpus Assistant on :${PORT} | provider=${PROVIDER} | model=${MODEL} | aistudio=${USE_AISTUDIO} | ${nText} texts, ${nWords} words`));

@@ -9,7 +9,7 @@ Ask in plain English (e.g. *"how many tṛtīyā words in the Vivekacūḍāma�
 **function-calling** loop runs deterministic query tools over the corpus (held in memory), so every count
 and example comes from a real scan with **text · ref · word** citations — nothing is guessed.
 
-Node stdlib only (no dependencies). Loads `corpus.json` (~50 MB → ~360 MB RSS) into memory at boot; fits
+Node, one dependency (`@anthropic-ai/sdk`, used only by the Claude service). Loads `corpus.json` (~50 MB → ~360 MB RSS) into memory at boot; fits
 Render's free 512 MB web service.
 
 ## Deploy on Render (free, no credit card)
@@ -25,8 +25,19 @@ Note: free web services **sleep after 15 min idle** and cold-start (~30–60 s) 
 ## Update after a corpus change
 Replace `corpus.json` + `corpus-tools.js` here, commit, push — Render auto-deploys.
 
+## Claude edition (second service)
+`render.yaml` defines a second service, **`vyakarana-corpus-chat-claude`**, from the same code: same tools, prompt and
+corpus, but the loop runs on Claude (`LLM_PROVIDER=anthropic`, default model `claude-opus-5-5`). It is paid per
+question, so it is gated by `ACCESS_PASSWORD` (the page asks for the code and remembers it in that browser) and
+capped by the monthly spend limit set in the Anthropic console (console.anthropic.com → Settings → Limits).
+Secrets: `ANTHROPIC_API_KEY`, `ACCESS_PASSWORD`. Every push redeploys both services.
+
 ## Config (env vars)
 - `GEMINI_API_KEY` *(required, secret)* — AI Studio key.
 - `GEMINI_MODEL` *(optional)* — default `gemini-3.6-flash`.
 - `ACCESS_PASSWORD` *(optional, secret)* — if set, users must enter this code.
+- `LLM_PROVIDER` *(optional)* — `gemini` (default) or `anthropic`.
+- `ANTHROPIC_API_KEY` *(secret, Claude service)* — Anthropic API key.
+- `ANTHROPIC_MODEL` *(optional)* — default `claude-opus-5-5`.
+- `ANTHROPIC_EFFORT` *(optional)* — `low`…`max`, default `high`.
 - `PORT` — provided by Render automatically.
