@@ -1,7 +1,8 @@
 # Vyākaraṇa Corpus Assistant — Render deploy
 
-A shareable web app for natural-language querying of a machine-analysed Sanskrit corpus of 15 texts
-(Bhagavad-gītā, 10 principal Upaniṣads, Brahmasūtra-bhāṣya, Vivekacūḍāmaṇi, Pañcadaśī, Aparokṣānubhūti):
+A shareable web app for natural-language querying of a machine-analysed Sanskrit corpus of 18 texts
+(Bhagavad-gītā, 10 principal Upaniṣads, Brahmasūtra-bhāṣya, Vivekacūḍāmaṇi, Pañcadaśī, Ātmabodha, Upadeśa Sāram,
+Saddarśanam, Vicārasāgara) plus 32 commentaries (Ānandagiri, vārttikas, Ratnaprabhā, Gītā verse-commentaries …):
 per-word morphology, vibhakti, kāraka roles, recursive samāsa peel, sandhi, clause structure, kāraka
 relations, and Śaṅkara-bhāṣya rhetorical roles.
 
@@ -23,7 +24,10 @@ Render's free 512 MB web service.
 Note: free web services **sleep after 15 min idle** and cold-start (~30–60 s) on the next visit — normal.
 
 ## Update after a corpus change
-Replace `corpus.json` + `corpus-tools.js` here, commit, push — Render auto-deploys.
+In devanagari-rescue run `searchtool/khan/corpus/hf-space/prepare.sh` — it prints the copy line: `server.js`,
+`package*.json`, `corpus-tools.js`, `corpus.json.gz`, `commentary.json.gz` (the commentary layer) and
+`svadhyaya-refidx.js` (ref → reading-page map for the answer links). Copy, commit, push — Render redeploys both services.
+Both start with `node --expose-gc --max-old-space-size=300 server.js` (keeps memory well under the free plan's 512 MB).
 
 ## Claude edition (second service)
 `render.yaml` defines a second service, **`vyakarana-corpus-chat-claude`**, from the same code: same tools, prompt and

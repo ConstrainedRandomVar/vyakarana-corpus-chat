@@ -29,6 +29,11 @@ const cp = require('child_process');
 const T = require(process.env.TOOLS_PATH || './corpus-tools.js');
 const CORPUS_PATH = process.env.CORPUS_PATH || path.join(__dirname, 'corpus.json');
 const corpus = T.loadCorpus(CORPUS_PATH);
+// commentary layer (commentary.json.gz beside the corpus) loaded at boot, not mid-request; then drop the parse garbage.
+// Start with `node --expose-gc --max-old-space-size=300 server.js` (package.json/render.yaml): live data ≈ 195 MB, and the
+// cap + gc keep the process well under Render's 512 MB (measured 2026-10-26).
+const commentary = T.commentaryOf ? T.commentaryOf(corpus) : null;
+if (global.gc) global.gc();
 const stats = T.corpus_stats(corpus);
 
 const PORT = process.env.PORT || 7860;
@@ -61,18 +66,28 @@ function vertexToken() {
 // System prompt — same contract as corpus-chat.js (ground, cite, respect coverage)
 // ===========================================================================
 const SYSTEM_PROMPT = `You are the Vyākaraṇa Corpus Assistant for the Vedāntic Vyākaraṇa Academy.
-You answer natural-language questions about a machine-analysed Sanskrit corpus of 15 texts (Bhagavad-gītā,
-10 principal Upaniṣads, Brahmasūtra-bhāṣya, Vivekacūḍāmaṇi, Pañcadaśī, Aparokṣānubhūti) covering per-word
+You answer natural-language questions about a machine-analysed Sanskrit corpus of 18 texts (Bhagavad-gītā,
+10 principal Upaniṣads, Brahmasūtra-bhāṣya, Vivekacūḍāmaṇi, Pañcadaśī, Ātmabodha, Upadeśa Sāram, Saddarśanam,
+Vicārasāgara) covering per-word
 morphology, vibhakti, kāraka roles, recursive samāsa peel, sandhi, clause structure, kāraka relations, and
 Śaṅkara-bhāṣya rhetorical roles.
 
 HARD RULES
 1. GROUND EVERYTHING IN TOOLS. Never state a count, form, sūtra, or example from memory — call a tool and use
    only what it returns. If no tool fits, say so plainly.
-2. CITE every example exactly as the tool returns it: text · ref · word.
+2. CITE every example exactly as the tool returns it: text · ref · word. When a tool row carries "link", make the ref a
+   Markdown link to it, copied exactly — e.g. [BS 1.1.19](reading-bs-1.html#v-1.1.19) — so the reader can open the passage.
 3. RESPECT COVERAGE and state the limit when relevant:
-   • dhātu/kṛdanta/lemma exist for the Bhagavad-gītā ONLY; for other texts recover kṛt/taddhita from the samāsa peel.
-   • sandhi exists for Gita, VC, PD, AB only. • bhāṣya exists for Gita, BS, the 10 Upaniṣads (Śaṅkara) and VC (Candraśekhara); PD/AB/SD/US/VS have none.
+   • dhātu (verbal root) covers every text with word rows; lemma likewise except VS; kṛt pratyayas come from the Gītā
+     morphology plus every text's samāsa peel / kṛt chain. • VS (Vicārasāgara, reading-only prose) has words, meaning,
+     dhātu and samāsa — no case/kāraka/clauses.
+   • sandhi exists for Gita, VC, PD, AB, SAD, UPS only. • bhāṣya (in get_verse / search_bhasya / find_discussions) exists for Gita,
+     BS, the 10 Upaniṣads (Śaṅkara) and VC (Candraśekhara); PD/AB/SD/US commentaries are in the commentary layer; VS has none.
+   • Beyond the bhāṣya, the COMMENTARY LAYER (search_commentary / get_commentary) holds Ānandagiri's ṭīkās (10 upaniṣads,
+     Gītā; BS = Nyāyanirṇaya), Ratnaprabhā + Pūrṇānandī, Brahmatattvaprakāśikā, the full Vaiyāsika-nyāya-mālā, Vanamālā,
+     Sureśvara's vārttikas + Śāstraprakāśikā, the Bṛhad Vārtikasāra + ṭīkā, the Gītā verse-commentaries (Śrīdharī,
+     Madhusūdanī, Nīlakaṇṭhī, Bhāṣyotkarṣadīpikā, Śaṅkarānandī, Bhāṣyārka) and the PD/AB/US/SD commentaries. Name the
+     commentator when you quote one; never present a ṭīkā's words as Śaṅkara's.
    • BS is bhāṣya-only. • BG kāraka = UoHyd e-reader (~57% reliable); for hetau-pañcamī prefer the bhāṣya route.
    • Some Upaniṣads carry two ref schemes; word-hit vs relation-hit may cite different refs — both are true.
    • VC voice values are partly garbled in the source (e.g. "कर्तरi") — treat as noise.
@@ -102,7 +117,7 @@ HARD RULES
 7. FORMAT answers in plain Markdown (headings, **bold**, bullet/numbered lists). Do NOT use LaTeX or math notation — no $...$, \\rightarrow, \\sqrt, \\text, \\ge, \\le. Use plain Unicode instead: → ⇒ ≥ ≤ × · √. Show a samāsa peel as layer → layer → layer.
 
 Text keys: Gita, Kena, Kathaka, Isha, Mandukya, Mundaka, Prashna, Taitiriya, Aitareya, Chandogya, Brha, BS,
-VC, PD, AB. Map loose names to the right key. Keep prose tight and scholarly; render Sanskrit in Devanāgarī.`;
+VC, PD, AB (Ātmabodha), UPS (Upadeśa Sāram), SAD (Saddarśanam), VS (Vicārasāgara). Map loose names to the right key. Keep prose tight and scholarly; render Sanskrit in Devanāgarī.`;
 
 function toolFns() { return T.TOOL_SCHEMAS.map(s => ({ name: s.name, description: s.description, parameters: s.parameters })); }
 
@@ -160,6 +175,33 @@ async function generate(contents) {
   }
 }
 
+// READING-VIEW LINKS (Harsha 2026-10-26): every tool row naming a text + ref gets `link` = its academy reading-view anchor,
+// from svadhyaya-refidx.js (the search tool's ref→page map, regenerated by sync_search on deploy — copy it in with the corpus).
+// Short relative links go to the model; answers get the full URL (absLinks). Unknown sub-refs fall back to the parent ref.
+const ACADEMY = 'https://constrainedrandomvar.github.io/vedantic-vyakarana-academy/';
+const READING_OUT = { Gita: 'gita', Isha: 'isha', Kena: 'kena', Kathaka: 'kathaka', Prashna: 'prashna', Mundaka: 'mundaka',
+  Mandukya: 'mandukya', Taitiriya: 'taitiriya', Aitareya: 'aitareya', Chandogya: 'chandogya', Brha: 'brha', BS: 'bs', VC: 'vc',
+  PD: 'pd', AB: 'ab', UPS: 'ups', SAD: 'sad', VS: 'vicharasagara' };
+let REFIDX = {};
+try { REFIDX = JSON.parse(fs.readFileSync(path.join(__dirname, 'svadhyaya-refidx.js'), 'utf8').replace(/^window\.SVADHYAYA_REFIDX=/, '').replace(/;\s*$/, '')); }
+catch (e) { console.warn('no svadhyaya-refidx.js — answers will carry no reading-view links'); }
+function linkFor(text, ref) {
+  const m = REFIDX[READING_OUT[text]]; if (!m || ref == null) return null;
+  let r = String(ref);
+  for (;;) { if (m[r]) return m[r] + '#v-' + encodeURIComponent(r); const i = r.lastIndexOf('.'); if (i < 0) return null; r = r.slice(0, i); }
+}
+function addLinks(x, depth = 0) {
+  if (!x || typeof x !== 'object' || depth > 6) return x;
+  if (Array.isArray(x)) { x.forEach(y => addLinks(y, depth + 1)); return x; }
+  if (typeof x.text === 'string' && READING_OUT[x.text] && !x.link) {
+    const ref = x.ref != null ? x.ref : (Array.isArray(x.refs) ? x.refs[0] : null);
+    const l = linkFor(x.text, ref); if (l) x.link = l;
+  }
+  for (const k of Object.keys(x)) if (x[k] && typeof x[k] === 'object') addLinks(x[k], depth + 1);
+  return x;
+}
+const absLinks = t => t.replace(/\]\((?:\.\/)?(reading-[^)\s]+)\)/g, '](' + ACADEMY + '$1)');
+
 function trimResult(res) {
   if (res && Array.isArray(res.hits) && res.hits.length > MAX_ROWS_TO_MODEL)
     return { ...res, hits: res.hits.slice(0, MAX_ROWS_TO_MODEL), truncated: true, _cappedTo: MAX_ROWS_TO_MODEL };
@@ -175,9 +217,40 @@ function maskForeign(t) {
           .replace(/([A-Za-z])\u0307/g, '$1');
 }
 
+// QUOTE CHECK (Harsha 2026-10-26): every Devanāgarī quote in an answer must be a verbatim substring of the tool output the
+// model saw this turn. Candidates = Devanāgarī inside ‘…’ “…” «…», plus lines that are mostly Devanāgarī (verses quoted on
+// their own line). Each piece between ellipses (… / ...) or daṇḍas (। ॥ — verse halves are stored separately) is checked on
+// its own; pieces under 6 letters are skipped.
+// Normalisation only removes formatting noise (NFC, ZWJ/ZWNJ, whitespace, edge punctuation) — no spelling tolerance.
+const DEVA = /[ऀ-ॿ꣠-ꣿ]/g;
+const qnorm = t => String(t).normalize('NFC').replace(/[‌‍‘’“”«»]/g, '').replace(/\\n/g, ' ').replace(/\s+/g, ' ')
+  .replace(/^[\s।॥,;:.!?\-—–‘’“”'"«»*_()\[\]०-९0-9]+|[\s।॥,;:.!?\-—–‘’“”'"«»*_()\[\]०-९0-9]+$/g, '');
+function quoteCandidates(answer) {
+  const out = [];
+  for (const m of answer.matchAll(/[‘“«]([^‘’“”«»\n]{3,600})[’”»]/g)) if ((m[1].match(DEVA) || []).length >= 4) out.push(m[1]);
+  for (const line of answer.split('\n')) {
+    const t = line.replace(/^\s*(?:>|[-*]|\d+\.)\s*/, '').replace(/\*\*/g, '').trim();
+    const deva = (t.match(DEVA) || []).length, letters = (t.match(/[\p{L}\p{M}]/gu) || []).length;
+    if (deva >= 15 && deva / Math.max(1, letters) >= 0.9) out.push(t.replace(/[‘’“”«»]/g, ''));
+  }
+  return out;
+}
+function unverifiedQuotes(answer, haystack) {
+  const hay = qnorm(haystack), bad = [];
+  for (const q of quoteCandidates(answer)) {
+    const pieces = q.split(/…|\.{3}|[।॥]/).map(qnorm).filter(p => (p.match(DEVA) || []).length >= 6);
+    if (pieces.some(p => !hay.includes(p))) bad.push(qnorm(q));
+  }
+  return [...new Set(bad)];
+}
+const QUOTE_FIX = bad => 'These quotations are not verbatim substrings of the tool results above:\n' + bad.map(b => '- ' + b).join('\n') +
+  '\nRewrite the SAME answer: copy each quotation character-for-character from the tool results (sandhi and spelling exactly as ' +
+  'printed), or remove the quotation marks and paraphrase. Change nothing else.';
+const quoteNote = bad => bad.length ? '\n\n---\n⚠ Not found verbatim in the tool output (check before citing): ' + bad.map(b => '‘' + b + '’').join(' · ') : '';
+
 async function ask(question) {
   const contents = [{ role: 'user', parts: [{ text: question }] }];
-  const trace = [];
+  const trace = []; let seen = '';
   for (let step = 0; step < MAX_STEPS; step++) {
     const { content } = await generate(contents);
     const parts = content.parts || [];
@@ -192,15 +265,23 @@ async function ask(question) {
         contents.push({ role: 'user', parts: [{ text: 'Your answer contains text in a script other than Devanāgarī / IAST (e.g. Arabic letters or a stray combining mark). Rewrite the SAME answer: Sanskrit only in Devanāgarī or IAST, and every Sanskrit quote copied character-for-character from the tool results above.' }] });
         continue;
       }
-      return { answer: maskForeign(answer), trace };
+      const bad = unverifiedQuotes(answer, seen);
+      if (bad.length && !trace.some(t => t.quotefix)) {
+        trace.push({ quotefix: bad.length });
+        contents.push({ role: 'model', parts: [{ text: answer }] });
+        contents.push({ role: 'user', parts: [{ text: QUOTE_FIX(bad) }] });
+        continue;
+      }
+      return { answer: absLinks(maskForeign(answer)) + quoteNote(bad), trace };
     }
     contents.push({ role: 'model', parts });
     const respParts = [];
     for (const fc of calls) {
       let r;
-      try { r = trimResult(T.callTool(corpus, fc.name, fc.args || {})); }
+      try { r = addLinks(trimResult(T.callTool(corpus, fc.name, fc.args || {}))); }
       catch (e) { r = { error: String(e.message || e) }; }
       trace.push({ tool: fc.name, args: fc.args || {}, count: r && r.count });
+      seen += JSON.stringify(r) + '\n';
       respParts.push({ functionResponse: { name: fc.name, response: r } });
     }
     contents.push({ role: 'user', parts: respParts });
@@ -244,7 +325,7 @@ async function claudeStep(messages) {
 
 async function askClaude(question) {
   const messages = [{ role: 'user', content: question }];
-  const trace = [];
+  const trace = []; let seen = '';
   for (let step = 0; step < MAX_STEPS; step++) {
     const msg = await claudeStep(messages);
     if (msg.stop_reason === 'refusal') return { answer: 'The model declined to answer this question.', trace };
@@ -260,16 +341,24 @@ async function askClaude(question) {
         messages.push({ role: 'user', content: 'Your answer contains text in a script other than Devanāgarī / IAST (e.g. Arabic letters or a stray combining mark). Rewrite the SAME answer: Sanskrit only in Devanāgarī or IAST, and every Sanskrit quote copied character-for-character from the tool results above.' });
         continue;
       }
-      return { answer: maskForeign(answer), trace };
+      const bad = unverifiedQuotes(answer, seen);
+      if (bad.length && !trace.some(t => t.quotefix)) {
+        trace.push({ quotefix: bad.length });
+        messages.push({ role: 'assistant', content: msg.content });
+        messages.push({ role: 'user', content: QUOTE_FIX(bad) });
+        continue;
+      }
+      return { answer: absLinks(maskForeign(answer)) + quoteNote(bad), trace };
     }
     if (msg.stop_reason === 'max_tokens') return { answer: '(stopped: a tool call was cut off — try a narrower question)', trace };
     messages.push({ role: 'assistant', content: msg.content });
     const results = calls.map(c => {
       let r, isErr = false;
-      try { r = trimResult(T.callTool(corpus, c.name, c.input || {})); }
+      try { r = addLinks(trimResult(T.callTool(corpus, c.name, c.input || {}))); }
       catch (e) { r = { error: String(e.message || e) }; isErr = true; }
       trace.push({ tool: c.name, args: c.input || {}, count: r && r.count });
-      return { type: 'tool_result', tool_use_id: c.id, content: JSON.stringify(r), ...(isErr ? { is_error: true } : {}) };
+      const js = JSON.stringify(r); seen += js + '\n';
+      return { type: 'tool_result', tool_use_id: c.id, content: js, ...(isErr ? { is_error: true } : {}) };
     });
     messages.push({ role: 'user', content: results });
   }
@@ -336,7 +425,7 @@ ${PASSWORD ? '<div class="pw">Access code: <input id="pw" type="password" placeh
 <script>
 const log=document.getElementById('log'),q=document.getElementById('q'),s=document.getElementById('s'),f=document.getElementById('f');
 function add(cls,txt){const d=document.createElement('div');d.className='msg '+cls;d.textContent=txt;log.appendChild(d);d.scrollIntoView({behavior:'smooth',block:'end'});return d;}
-function renderMd(el,text){ if(window.marked&&window.DOMPurify){ el.innerHTML=DOMPurify.sanitize(marked.parse(String(text))); } else { el.textContent=text; } el.scrollIntoView({behavior:'smooth',block:'end'}); }
+function renderMd(el,text){ if(window.marked&&window.DOMPurify){ el.innerHTML=DOMPurify.sanitize(marked.parse(String(text))); el.querySelectorAll('a[href]').forEach(a=>{a.target='_blank';a.rel='noopener';}); } else { el.textContent=text; } el.scrollIntoView({behavior:'smooth',block:'end'}); }
 document.querySelectorAll('.ex button').forEach(b=>b.onclick=()=>{q.value=b.textContent;q.focus();});
 const pwEl=document.getElementById('pw');if(pwEl){try{pwEl.value=localStorage.getItem('cc_pw')||'';}catch(e){}}
 f.onsubmit=async e=>{e.preventDefault();const question=q.value.trim();if(!question)return;
@@ -347,7 +436,7 @@ f.onsubmit=async e=>{e.preventDefault();const question=q.value.trim();if(!questi
     if(pw){try{if(r.status===401)localStorage.removeItem('cc_pw');else localStorage.setItem('cc_pw',pw.value);}catch(e){}}
     if(d.error){pend.textContent='⚠ '+d.error;}
     else{renderMd(pend,d.answer||'(no answer)');
-      if(d.trace&&d.trace.length){const t=document.createElement('div');t.className='trace';t.textContent='tools: '+d.trace.map(x=>x.tool).join(' → ');pend.appendChild(t);}}
+      if(d.trace&&d.trace.length){const t=document.createElement('div');t.className='trace';t.textContent='tools: '+d.trace.filter(x=>x.tool).map(x=>x.tool).join(' → ');pend.appendChild(t);}}
   }catch(err){pend.textContent='⚠ '+err.message;}
   s.disabled=false;q.focus();};
 q.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();f.requestSubmit();}});
@@ -359,7 +448,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(PAGE); return;
   }
-  if (req.method === 'GET' && req.url === '/health') { send(res, 200, { ok: true, provider: PROVIDER, model: MODEL, aistudio: USE_AISTUDIO, texts: nText }); return; }
+  if (req.method === 'GET' && req.url === '/health') { send(res, 200, { ok: true, provider: PROVIDER, model: MODEL, aistudio: USE_AISTUDIO, texts: nText, commentaryBlocks: commentary ? commentary.rows.length : 0, rssMB: Math.round(process.memoryUsage().rss / 1e6) }); return; }
   if (req.method === 'POST' && req.url === '/chat') {
     let body = '';
     req.on('data', d => { body += d; if (body.length > 1e5) req.destroy(); });
@@ -376,4 +465,4 @@ const server = http.createServer((req, res) => {
   }
   send(res, 404, { error: 'not found' });
 });
-server.listen(PORT, () => console.log(`Vyākaraṇa Corpus Assistant on :${PORT} | provider=${PROVIDER} | model=${MODEL} | aistudio=${USE_AISTUDIO} | ${nText} texts, ${nWords} words`));
+server.listen(PORT, () => console.log(`Vyākaraṇa Corpus Assistant on :${PORT} | provider=${PROVIDER} | model=${MODEL} | aistudio=${USE_AISTUDIO} | ${nText} texts, ${nWords} words | commentary: ${commentary ? commentary.rows.length + ' blocks' : 'none'} | rss ${Math.round(process.memoryUsage().rss / 1e6)} MB`));

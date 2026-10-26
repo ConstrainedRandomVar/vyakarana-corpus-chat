@@ -30,10 +30,26 @@ function loadCorpus(file) {
   // corpus.json is committed as a gzip (corpus.json.gz, ~10x smaller — keeps it under GitHub's 100MB
   // limit). Prefer the raw .json when present (local dev / the drift gate keep it, gitignored); otherwise
   // load the committed .gz (corpus-chat/hf-space ship only the .gz). Both yield the same object.
-  if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
   const gz = p.endsWith('.gz') ? p : p + '.gz';
-  if (fs.existsSync(gz)) return JSON.parse(require('zlib').gunzipSync(fs.readFileSync(gz)));
-  return JSON.parse(fs.readFileSync(p, 'utf8'));   // no file → original ENOENT error
+  const c = fs.existsSync(p) && !p.endsWith('.gz') ? JSON.parse(fs.readFileSync(p, 'utf8'))
+    : fs.existsSync(gz) ? JSON.parse(require('zlib').gunzipSync(fs.readFileSync(gz)))
+    : JSON.parse(fs.readFileSync(p, 'utf8'));   // no file → original ENOENT error
+  Object.defineProperty(c, '_dir', { value: path.dirname(p), enumerable: false });
+  return c;
+}
+// COMMENTARY LAYER (build_commentary.js → commentary.json.gz beside corpus.json): every commentary on the site that
+// corpus.json's `bhasya` does not carry (Ānandagiri ṭīkās, vārttikas, Ratnaprabhā, Gītā verse-commentaries, prakaraṇa
+// commentaries…), placed on base text + reading-view ref. Loaded on first use; null when the file is absent.
+function commentaryOf(c) {
+  if (c._commentary !== undefined) return c._commentary;
+  let doc = null;
+  const base = path.join(c._dir || __dirname, 'commentary.json');
+  try {
+    if (fs.existsSync(base)) doc = JSON.parse(fs.readFileSync(base, 'utf8'));
+    else if (fs.existsSync(base + '.gz')) doc = JSON.parse(require('zlib').gunzipSync(fs.readFileSync(base + '.gz')));
+  } catch (e) { doc = null; }
+  Object.defineProperty(c, '_commentary', { value: doc, enumerable: false, writable: true });
+  return doc;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +102,40 @@ function spellCount(hay, query) {
   return m ? m.length : 0;
 }
 const spellContains = (hay, query) => spellCount(hay, query) > 0;
+// DHĀTU KEYS: roots are stored bare for Gītā/VS ("कृ") but in the gloss-card form elsewhere ("√कृ डुकृञ् करणे 08USA",
+// "प्र-√नम् णमँ प्रह्वत्वे शब्दे च 01PSA + क्त → प्रणत"). Match on the bare root ("कृ"), the upasarga form ("प्र-नम्") or
+// the dhātupāṭha form ("डुकृञ्"); a leading √ in the query is ignored. dhatuBare() is the facet value. (2026-10-26)
+function dhatuParse(root, dp2bare) {
+  const r = String(root || '').trim(); const i = r.indexOf('√');
+  if (i < 0) {
+    // some entries carry only the dhātupāṭha form ("डुकृञ् करणे 08USA + क्त → उपाकृत"): recover the bare root from the
+    // pairs seen elsewhere in the corpus ("√कृ डुकृञ् …"); a plain bare root ("कृ", Gītā/VS) passes through
+    const t0 = r.split(/\s+/)[0];
+    if (/\b\d\d[A-Z]{3}\b/.test(r) && dp2bare && dp2bare.has(t0)) return { bare: dp2bare.get(t0), upa: '', dp: t0 };
+    return { bare: t0, upa: '', dp: '' };
+  }
+  const upa = r.slice(0, i).replace(/-+$/, '').trim(); const toks = r.slice(i + 1).trim().split(/\s+/);
+  return { bare: toks[0] || '', upa, dp: /^\+$/.test(toks[1] || '') ? '' : (toks[1] || '') };
+}
+// dhātupāṭha form → bare root, learned once per corpus from entries that carry both (majority wins)
+function dhatuDp2Bare(c) {
+  if (c && c._dp2bare) return c._dp2bare;
+  const votes = new Map();
+  for (const v of (c ? c.verses : [])) for (const w of v.words || []) {
+    const d = w.dhatu && w.dhatu.root && String(w.dhatu.root).includes('√') ? dhatuParse(w.dhatu.root) : null;
+    if (!d || !d.dp || !d.bare) continue;
+    const m = votes.get(d.dp) || new Map(); m.set(d.bare, (m.get(d.bare) || 0) + 1); votes.set(d.dp, m);
+  }
+  const map = new Map([...votes].map(([dp, m]) => [dp, [...m].sort((x, y) => y[1] - x[1])[0][0]]));
+  if (c) Object.defineProperty(c, '_dp2bare', { value: map, enumerable: false });
+  return map;
+}
+const dhatuBare = (root, c) => dhatuParse(root, dhatuDp2Bare(c)).bare;
+function dhatuMatch(root, filter, c) {
+  const d = dhatuParse(root, dhatuDp2Bare(c)); const keys = [d.bare, d.upa ? d.upa + '-' + d.bare : '', d.dp].filter(Boolean);
+  const qs = (Array.isArray(filter) ? filter : [filter]).map(q => String(q).replace(/√/g, '').trim());
+  return qs.some(q => keys.includes(q));
+}
 function eqOrIn(val, filter) {
   // filter may be a string (exact) or array (any-of)
   if (Array.isArray(filter)) return filter.includes(val);
@@ -143,7 +193,7 @@ function query_words(c, a) {
       if (a.lemma != null && w.lemma !== a.lemma) continue;
       if (a.isSarvanama != null && !!w.isSarvanama !== !!a.isSarvanama) continue;
       if (a.karaka_role && !((w.karakaRoles || []).some(r => eqOrIn(r, a.karaka_role)))) continue;
-      if (a.dhatu && !(w.dhatu && eqOrIn(w.dhatu.root, a.dhatu))) continue;
+      if (a.dhatu && !(w.dhatu && dhatuMatch(w.dhatu.root, a.dhatu, c))) continue;
       if (a.meaning_contains && !contains(w.meaning, a.meaning_contains)) continue;
       // kṛt pratyaya: from walk krdanta OR from any कृत् peel layer
       if (a.krt_pratyaya) {
@@ -384,6 +434,21 @@ const INQUIRY_MARKERS = [
   ['kim…uta', /कि(?:म्|मि|मु|ं)[^।॥?]{0,160}\sउत\s/g],
 ];
 const DISC_ROLES = ['purvapaksha', 'siddhanta', 'ekadeshi'];
+// PAIRED OPPOSITES: a keyword hit inside a pair-of-opposites word (सुखदुःख, दुःखसुखे, शीतोष्ण, रागद्वेष) is about the PAIR,
+// not the keyword's own topic — सुख as a synonym of आनन्द pulled Gītā 13.19–22 / BS 3.1.24–27 (66–100% paired hits) above
+// real ānanda vicāras (0–3% paired). A unit's score is scaled by (1 − 0.7 × paired share). (Harsha 2026-10-26.)
+const OPPOSITES = [['सुख', 'दुःख'], ['शीत', 'उष्ण'], ['राग', 'द्वेष']];
+const PAIR_PENALTY = 0.7;
+function pairedCount(text, kws) {
+  const opp = kws.map(k => { const f = spellFold(k).trim(); const o = [];
+    for (const [x, y] of OPPOSITES) { if (f.includes(x)) o.push(y); if (f.includes(y)) o.push(x); } return o; });
+  if (!opp.some(o => o.length)) return 0;
+  let n = 0;
+  for (const tok of text.split(/[\s।॥,;:‘’'"()\[\]—-]+/)) {
+    kws.forEach((k, i) => { if (!opp[i].length) return; const m = spellCount(tok, k); if (m && opp[i].some(o => tok.includes(o))) n += m; });
+  }
+  return n;
+}
 function excerptWindows(text, kws) {
   // one window per keyword hit: its sentence (split on । ॥ ?) when ≤300 chars, else ±150 chars snapped to spaces;
   // a hit inside an earlier window doesn't open a new one
@@ -484,9 +549,9 @@ function find_discussions(c, a) {
   // 3. signals + score + key sentences
   const out = discs.map(d => {
     const parts = d.parts, first = parts[0], last = parts[parts.length - 1];
-    let occ = 0, chars = 0; const roles = {}, markers = {}; let markerWindows = 0; const cands = [];
+    let occ = 0, chars = 0, paired = 0; const roles = {}, markers = {}; let markerWindows = 0; const cands = [];
     for (const p of parts) {
-      occ += p.occ; chars += p.text.length;
+      occ += p.occ; chars += p.text.length; if (p.occ) paired += pairedCount(p.text, kws);
       const roleSpans = (p.b.spans || []).filter(s => DISC_ROLES.includes(s.role) && kws.some(k => spellContains(s.text, k)));
       for (const s of roleSpans) roles[s.role] = (roles[s.role] || 0) + 1;
       if (!p.occ) continue;
@@ -501,7 +566,9 @@ function find_discussions(c, a) {
     }
     const roleSpans = Object.values(roles).reduce((x, y) => x + y, 0);
     const density = chars ? occ * 1000 / chars : 0;
-    const score = 2 * Math.log2(1 + occ) + 0.3 * Math.min(density, 15) + 1.5 * Math.min(roleSpans, 10) + 2 * Math.min(markerWindows, 6);
+    const pairedShare = occ ? Math.min(1, paired / occ) : 0;
+    const score = (2 * Math.log2(1 + occ) + 0.3 * Math.min(density, 15) + 1.5 * Math.min(roleSpans, 10) + 2 * Math.min(markerWindows, 6))
+      * (1 - PAIR_PENALTY * pairedShare);
     const fmt = k => ({ ref: k.ref, text: k.text.length > 320 ? k.text.slice(0, 320) + '…' : k.text, inquiryMarker: k.marker, inRoleSpan: k.role });
     const keySentences = cands.slice().sort((x, y) => y.rank - x.rank).slice(0, 3).map(fmt);
     // CLOSING sentences: the best key sentences of the unit's LAST passage. A multi-passage discussion may present a view
@@ -514,7 +581,8 @@ function find_discussions(c, a) {
       text: first.v.text, variant: first.b.variant || null,
       refRange: refs.length > 1 ? first.v.ref + '–' + last.v.ref : first.v.ref, refs,
       score: Math.round(score * 10) / 10,
-      signals: { occurrences: occ, passages: parts.length, chars, densityPer1k: Math.round(density * 10) / 10, roleSpans: roles, inquiryMarkers: markers, markerWindows },
+      signals: { occurrences: occ, passages: parts.length, chars, densityPer1k: Math.round(density * 10) / 10, roleSpans: roles, inquiryMarkers: markers, markerWindows,
+        ...(paired ? { pairedOpposites: paired, pairedShare: Math.round(pairedShare * 100) / 100 } : {}) },
       keySentences,
       closingSentences,
       ...(d.adh ? { adhikarana: adhikaranaView(d.adh) } : {}),
@@ -525,6 +593,57 @@ function find_discussions(c, a) {
   const res = { keywords: kws, count: out.length, discussions: lim >= 0 ? out.slice(0, lim) : out };
   if (lim >= 0 && out.length > lim) res.truncated = true;
   return res;
+}
+
+// ===========================================================================
+// TOOLS: search_commentary / get_commentary — the commentary layer (see commentaryOf)
+// ===========================================================================
+function commentaryRows(c, a) {
+  const C = commentaryOf(c); if (!C) return null;
+  const works = a.work == null ? null : new Set(Array.isArray(a.work) ? a.work : [a.work]);
+  const texts = a.text == null ? null : new Set(Array.isArray(a.text) ? a.text : [a.text]);
+  const rp = a.ref_prefix == null || a.ref_prefix === '' ? null : String(a.ref_prefix);
+  return { C, rows: C.rows.filter(([w, x, r]) => (!works || works.has(w)) && (!texts || texts.has(x)) &&
+    (!rp || (r != null && (r === rp || r.startsWith(rp + '.'))))) };
+}
+const NO_COMMENTARY = { error: 'commentary layer not loaded (commentary.json.gz missing beside corpus.json)' };
+function search_commentary(c, a) {
+  a = a || {};
+  if (!a.keyword || !String(a.keyword).trim()) return { error: 'search_commentary needs keyword' };
+  const R = commentaryRows(c, a); if (!R) return NO_COMMENTARY;
+  const hits = [];
+  for (const [w, x, r, layer, t] of R.rows) {
+    const text = spellFold(t); const n = spellCount(text, a.keyword); if (!n) continue;
+    const wk = R.C.works[w] || {};
+    const win = excerptWindows(text, [a.keyword]).slice(0, 2).map(e => e.text.length > 320 ? e.text.slice(0, 320) + '…' : e.text);
+    hits.push({ work: w, title: wk.title, layer, text: x, ref: r, occurrences: n, excerpts: win,
+      ...(wk.side ? { side: wk.side, hl: String(a.keyword).trim() } : {}) });
+  }
+  if (a.count_by_work) {
+    const m = {}; for (const h of hits) m[h.work] = (m[h.work] || 0) + h.occurrences;
+    return { count: hits.length, byWork: Object.entries(m).sort((x, y) => y[1] - x[1]).map(([work, occurrences]) => ({ work, title: (R.C.works[work] || {}).title, occurrences })) };
+  }
+  return envelope(hits, a);
+}
+function get_commentary(c, a) {
+  a = a || {};
+  if (!a.text || a.ref == null) return { error: 'get_commentary needs text and ref' };
+  const C = commentaryOf(c); if (!C) return NO_COMMENTARY;
+  const ref = String(a.ref), max = a.max_chars == null ? 4000 : a.max_chars;
+  const works = a.work == null ? null : new Set(Array.isArray(a.work) ? a.work : [a.work]);
+  const by = new Map();
+  for (const [w, x, r, layer, t] of C.rows) {
+    if (x !== a.text || r !== ref || (works && !works.has(w))) continue;
+    const e = by.get(w) || { work: w, title: (C.works[w] || {}).title, layer, text: x, ref, passages: [], chars: 0 };
+    e.passages.push(t); e.chars += t.length; by.set(w, e);
+  }
+  const out = [...by.values()].map(e => {
+    let full = e.passages.join(' ¶ '); const cut = full.length > max;
+    if (cut) full = full.slice(0, max) + '…';
+    return { work: e.work, title: e.title, layer: e.layer, text: e.text, ref: e.ref, commentary: full, ...(cut ? { truncated: true, totalChars: e.chars } : {}) };
+  });
+  return { text: a.text, ref, count: out.length, commentaries: out,
+    ...(out.length ? {} : { note: 'no commentary block at this exact ref — try search_commentary with ref_prefix, or the chapter ref' }) };
 }
 
 // ===========================================================================
@@ -572,7 +691,7 @@ const FACETS = {
   linga:           v => v.words.filter(w => w.linga).map(w => w.linga),
   lemma:           v => v.words.filter(w => w.lemma != null).map(w => w.lemma),
   karaka_role:     v => v.words.flatMap(w => w.karakaRoles || []),
-  dhatu:           v => v.words.filter(w => w.dhatu && w.dhatu.root).map(w => w.dhatu.root),
+  dhatu:           (v, c) => v.words.filter(w => w.dhatu && w.dhatu.root).map(w => dhatuBare(w.dhatu.root, c)),
   voice:           v => (v.clusters || []).filter(cl => cl.voice).map(cl => cl.voice),
   transitivity:    v => (v.clusters || []).filter(cl => cl.transitivity).map(cl => cl.transitivity),
   clause_type:     v => (v.clauses || []).filter(cl => cl.type).map(cl => cl.type),
@@ -602,6 +721,12 @@ const FACETS = {
 // ===========================================================================
 function list_values(c, a) {
   a = a || {};
+  if (a.facet === 'commentary_work') {   // the commentary layer's works (not a per-verse facet)
+    const C = commentaryOf(c); if (!C) return NO_COMMENTARY;
+    const n = {}; for (const [w, x] of C.rows) if (!a.text || x === a.text) n[w] = (n[w] || 0) + 1;
+    const rows = Object.keys(n).map(w => ({ value: w, title: C.works[w].title, base: C.works[w].base, count: n[w] })).sort((x, y) => y.count - x.count);
+    return { facet: a.facet, distinct: rows.length, values: rows };
+  }
   const fn = FACETS[a.facet];
   if (!fn) return { error: 'unknown facet: ' + a.facet, facets: Object.keys(FACETS) };
   const counts = {};
@@ -712,8 +837,9 @@ const TOOL_SCHEMAS = [
     name: 'query_words',
     description: 'Find individual words matching morphological / kāraka / derivation filters. ' +
       'All supplied filters are ANDed. Returns cited word occurrences (text·ref·word). ' +
-      'Coverage note: dhatu (verbal root) is populated for the Bhagavad-gītā and Vicārasāgara (VS); ' +
-      'krt/lemma are Gita-only; meaning/case/vacana/linga/karaka_role/samasa cover all analysed texts. ' +
+      'Coverage note: dhatu (verbal root) and lemma cover every mūla text (lemma not VS); krt_pratyaya comes from ' +
+      'the Gītā morphology plus every text\'s samāsa peel / kṛt chain; meaning/case/vacana/linga/karaka_role/samasa cover ' +
+      'all analysed texts. BS is bhāṣya-only (no word rows). ' +
       'VS (reading-only prose) contributes word, meaning, dhātu-root and samāsa — no case/kāraka.',
     parameters: { type: 'object', properties: {
       text: { type: 'string', description: 'Restrict to one text key (e.g. VC, PD, Gita, Chandogya, Brha, VS).' },
@@ -724,7 +850,7 @@ const TOOL_SCHEMAS = [
       lemma: { type: 'string', description: 'Exact stem/prātipadika (Gita only).' },
       isSarvanama: { type: 'boolean', description: 'Restrict to pronouns (सर्वनाम).' },
       karaka_role: { type: 'string', description: 'kāraka role, e.g. कर्ता, कर्म, करणम्, सम्प्रदानम्, अपादानम्, अधिकरणम्, विशेषणम्.' },
-      dhatu: { type: 'string', description: 'verbal root (Gita + VS), e.g. कृ, गम्, दृश्, रूप्.' },
+      dhatu: { type: 'string', description: 'verbal root — every text except BS (bhāṣya-only). Give the bare root (कृ, गम्, दृश्, रूप्); also accepts the upasarga form (प्र-नम्) or the dhātupāṭha form (डुकृञ्). Result rows show the full root entry (gaṇa code, kṛt chain).' },
       krt_pratyaya: { type: 'string', description: 'kṛt suffix, e.g. क्त, क्तिन्, शतृ, ल्युट् (from morphology or कृत् peel layer).' },
       taddhita_pratyaya: { type: 'string', description: 'taddhita suffix, e.g. मतुप्, तसिल्, वति (from तद्धित peel layer).' },
       voice: { type: 'string', description: 'clause voice of the governing verb, e.g. कर्तरि, कर्मणि, भावे.' },
@@ -816,7 +942,7 @@ const TOOL_SCHEMAS = [
   },
   {
     name: 'find_mahavakya',
-    description: 'Find the mahāvākyas / identity equations (jīva=brahman "great sayings") in the corpus — a ' +
+    description: 'Find the mahāvākyas / identity equations (jīva = brahman) in the corpus — a ' +
       'human-verified śāstric catalog (188 verses across 16 texts + VS). Each hit reports its sub-type and a ' +
       'classification label. Sub-types: mukhya (direct aikya identity — tat tvam asi, ahaṃ brahmāsmi, ayam ' +
       'ātmā brahma, so\'ham asmi) and badhayam (identity via sublation — the world/witness resolved into ' +
@@ -860,11 +986,13 @@ const TOOL_SCHEMAS = [
       'siddhānta / स्वमत — NEVER a view VNM labels एकदेशि (one-sided) or pūrvapakṣa; take adhikaraṇa names/positions ' +
       'from this field, not from memory. Matching is ' +
       'spelling-tolerant (आनन्द also finds ब्रह्मानन्द / सैषानन्दस्य). PASS SYNONYMS as separate keywords (e.g. ' +
-      '["आनन्द","सुख"] — the bhūmā-vidyā Chāndogya 7.23 says सुख, not आनन्द); note a broad synonym like सुख also pulls ' +
-      'in सुखदुःख passages. The score only ranks candidates: YOU must read the key sentences and decide which are real ' +
+      '["आनन्द","सुख"] — the bhūmā-vidyā Chāndogya 7.23 says सुख, not आनन्द). A hit inside a pair-of-opposites word ' +
+      '(सुखदुःख, शीतोष्ण, रागद्वेष) is about the pair, not the topic: such units are scaled down by (1 − 0.7 × pairedShare) ' +
+      'and report signals.pairedOpposites / pairedShare — a unit with a high pairedShare is usually NOT a discussion of the ' +
+      'keyword itself. Read past the first few results: real discussions can rank 15th–25th. The score only ranks candidates: YOU must read the key sentences and decide which are real ' +
       'vicāras (saṃśaya → pūrvapakṣa → siddhānta on the topic itself) vs. passing mentions or quotations, and say so. ' +
-      'Coverage = the bhāṣya in this corpus (Śaṅkara on BS, Gītā, 10 upaniṣads; Candraśekhara on VC) — not ' +
-      'Ānandagiri, vārttikas, or any PD/AB/SD/US/VS commentary.',
+      'Coverage = the bhāṣya in this corpus (Śaṅkara on BS, Gītā, 10 upaniṣads; Candraśekhara on VC). For what the ' +
+      'ṭīkās / vārttikas / Gītā verse-commentaries / prakaraṇa commentaries say, use search_commentary / get_commentary.',
     parameters: { type: 'object', properties: {
       keywords: { type: 'array', items: { type: 'string' }, description: 'Devanāgarī keyword(s) / synonyms, e.g. ["आनन्द","सुख"].' },
       text: { type: 'string', description: 'restrict to one text key, e.g. BS, Brha, Taitiriya, Gita, VC.' },
@@ -873,6 +1001,39 @@ const TOOL_SCHEMAS = [
       min_score: { type: 'number', description: 'drop discussions scoring below this.' },
       bridge: { type: 'integer', description: 'let a discussion jump this many hit-less passages (default 0; >0 merges passing mentions).' },
     }, required: ['keywords'] },
+  },
+  {
+    name: 'search_commentary',
+    description: 'Search the COMMENTARY LAYER — every commentary beyond the bhāṣya: Ānandagiri\'s ṭīkās (all 10 upaniṣads + ' +
+      'Gītā; on BS = Nyāyanirṇaya), Ratnaprabhā + Pūrṇānandī and Brahmatattvaprakāśikā and the full Vaiyāsika-nyāya-mālā (BS), ' +
+      'Vanamālā (Taittirīya), Sureśvara\'s vārttikas (Bṛhad, Taittirīya) + Śāstraprakāśikā, the Bṛhad Vārtikasāra + ṭīkā, the ' +
+      'Gītā verse-commentaries (Śrīdharī, Madhusūdanī, Nīlakaṇṭhī, Bhāṣyotkarṣadīpikā, Śaṅkarānandī, Bhāṣyārka), and the ' +
+      'prakaraṇa commentaries (PD Pada-dīpikā, AB Padmapāda, US Gaṇapati Muni, SD Kapālī Śāstrī). Use for "what does ' +
+      'Ānandagiri / Madhusūdana / the vārttika say about X". Keyword matching is spelling-tolerant like search_bhasya. ' +
+      'Each hit = one commentary block on base text + ref, with title, layer and excerpts. list_values(facet="commentary_work") ' +
+      'lists the work ids. count_by_work=true returns occurrences per work instead of hits.',
+    parameters: { type: 'object', properties: {
+      keyword: { type: 'string', description: 'Devanāgarī keyword (spelling-tolerant).' },
+      work: { type: 'string', description: 'restrict to a work id, e.g. anandagiri-brihad, nyayanirnaya, ratnaprabha, madhusudani-gita, brihad-vartika (see list_values commentary_work).' },
+      text: { type: 'string', description: 'restrict to commentaries on one base text key, e.g. BS, Gita, Brha, Taitiriya.' },
+      ref_prefix: { type: 'string', description: 'restrict to a chapter/division ref prefix of the base text, e.g. "1.1".' },
+      limit: { type: 'integer', description: 'max hits (default 50; -1 = all).' },
+      count_only: { type: 'boolean', description: 'return only the number of matching blocks.' },
+      count_by_work: { type: 'boolean', description: 'return occurrences per work (which commentaries discuss this most).' },
+    }, required: ['keyword'] },
+  },
+  {
+    name: 'get_commentary',
+    description: 'Read what the commentaries say on ONE verse/sūtra/mantra of a base text: every commentary-layer work with a ' +
+      'block at exactly that ref (e.g. BS 1.1.19 → Nyāyanirṇaya, Ratnaprabhā, Brahmatattvaprakāśikā; Gita 2.47 → Ānandagiri, ' +
+      'Śrīdharī, Madhusūdanī, …). Text per work is capped at max_chars (default 4000; truncated=true when cut). The bhāṣya itself ' +
+      'comes from get_verse.',
+    parameters: { type: 'object', properties: {
+      text: { type: 'string', description: 'base text key, e.g. BS, Gita, Brha, Taitiriya, PD, AB, UPS, SAD.' },
+      ref: { type: 'string', description: 'exact ref, e.g. "1.1.19", "2.47", "3.9.28".' },
+      work: { type: 'string', description: 'optional: only this work id.' },
+      max_chars: { type: 'integer', description: 'cap per work (default 4000).' },
+    }, required: ['text', 'ref'] },
   },
   {
     name: 'search_moola',
@@ -909,7 +1070,8 @@ const TOOL_SCHEMAS = [
     parameters: { type: 'object', properties: {
       facet: { type: 'string', description: 'one of: case, vibhakti_sutra, vibhakti_type, vacana, linga, lemma, karaka_role, dhatu, voice, ' +
         'transitivity, clause_type, clause_count, krt_pratyaya, taddhita_pratyaya, samasa_category, samasa_type, sutra, ' +
-        'sandhi_rule, relation, bhasya_role, mahavakya, virodha_theme, virodha_mode, virodha_source, text, chapter. ' +
+        'sandhi_rule, relation, bhasya_role, mahavakya, virodha_theme, virodha_mode, virodha_source, text, chapter, ' +
+        'commentary_work (the ṭīkās/vārttikas/verse-commentaries searchable with search_commentary, with title + base text). ' +
         '(vibhakti_sutra/vibhakti_type = the two-layer rule ordaining a word’s CASE, e.g. 2.3.29 anya-yoge; VC+AB only so far.)' },
       text: { type: 'string' },
       ref_prefix: { type: 'string', description: 'restrict to a chapter/division ref prefix, e.g. "6" = VS taraṅga 6.' },
@@ -944,13 +1106,15 @@ const TOOL_SCHEMAS = [
 
 // map name -> fn for a generic dispatcher (handy for a function-calling loop)
 const TOOLS = { query_words, find_compounds, find_sandhi, find_relational, find_clauses,
-  find_mahavakya, find_virodha, search_bhasya, find_discussions, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
+  find_mahavakya, find_virodha, search_bhasya, find_discussions, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats,
+  search_commentary, get_commentary };
 function callTool(c, name, args) {
   const fn = TOOLS[name];
   if (!fn) throw new Error('unknown tool: ' + name);
   return fn(c, args || {});
 }
 
-module.exports = { loadCorpus, TOOL_SCHEMAS, TOOLS, callTool,
+module.exports = { loadCorpus, commentaryOf, TOOL_SCHEMAS, TOOLS, callTool,
   query_words, find_compounds, find_sandhi, find_relational, find_clauses,
-  find_mahavakya, find_virodha, search_bhasya, find_discussions, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats };
+  find_mahavakya, find_virodha, search_bhasya, find_discussions, search_moola, find_by_sutra, list_values, count_by, get_verse, corpus_stats,
+  search_commentary, get_commentary };
