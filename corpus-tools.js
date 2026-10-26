@@ -103,36 +103,50 @@ function spellCount(hay, query) {
 }
 const spellContains = (hay, query) => spellCount(hay, query) > 0;
 // DHĀTU KEYS: roots are stored bare for Gītā/VS ("कृ") but in the gloss-card form elsewhere ("√कृ डुकृञ् करणे 08USA",
-// "प्र-√नम् णमँ प्रह्वत्वे शब्दे च 01PSA + क्त → प्रणत"). Match on the bare root ("कृ"), the upasarga form ("प्र-नम्") or
-// the dhātupāṭha form ("डुकृञ्"); a leading √ in the query is ignored. dhatuBare() is the facet value. (2026-10-26)
+// "प्र-√नम् णमँ प्रह्वत्वे शब्दे च 01PSA + क्त → प्रणत"). Match on the bare root ("कृ"), the upasarga form ("प्र-नम्"), the
+// dhātupāṭha form ("डुकृञ्") or the facet label; a leading √ in the query is ignored. (2026-10-26)
+// HOMONYMS (corpus-chat eval 2026-10-26): one spelling can be several dhātupāṭha roots — √अस् = असँ भुवि ("be") and असुँ क्षेपणे
+// ("throw"); √विद् = विदँ ज्ञाने / विदँ सत्तायाम् / विदॢँ लाभे. The ENTRY (dhātupāṭha form + meaning, up to the gaṇa code) tells them
+// apart, so the facet label is "अस् (असँ भुवि)" wherever a bare root has ≥2 entries in the corpus; a word stored with the bare
+// root only (Gītā/VS) cannot be resolved and keeps the plain "अस्". Querying the bare root still matches every sense.
+const GANA = /^\d\d[A-Z]{3}$/;
 function dhatuParse(root, dp2bare) {
   const r = String(root || '').trim(); const i = r.indexOf('√');
   if (i < 0) {
     // some entries carry only the dhātupāṭha form ("डुकृञ् करणे 08USA + क्त → उपाकृत"): recover the bare root from the
     // pairs seen elsewhere in the corpus ("√कृ डुकृञ् …"); a plain bare root ("कृ", Gītā/VS) passes through
-    const t0 = r.split(/\s+/)[0];
-    if (/\b\d\d[A-Z]{3}\b/.test(r) && dp2bare && dp2bare.has(t0)) return { bare: dp2bare.get(t0), upa: '', dp: t0 };
-    return { bare: t0, upa: '', dp: '' };
+    const toks = r.split(/\s+/), t0 = toks[0], g = toks.findIndex(t => GANA.test(t));
+    if (g > 0 && dp2bare && dp2bare.has(t0)) return { bare: dp2bare.get(t0), upa: '', dp: t0, entry: toks.slice(0, g).join(' ') };
+    return { bare: t0, upa: '', dp: '', entry: '' };
   }
   const upa = r.slice(0, i).replace(/-+$/, '').trim(); const toks = r.slice(i + 1).trim().split(/\s+/);
-  return { bare: toks[0] || '', upa, dp: /^\+$/.test(toks[1] || '') ? '' : (toks[1] || '') };
+  const g = toks.findIndex(t => GANA.test(t));
+  const ent = g > 1 ? toks.slice(1, g).filter(t => !/^\(/.test(t)) : [];
+  return { bare: toks[0] || '', upa, dp: ent[0] || '', entry: ent.join(' ') };
 }
-// dhātupāṭha form → bare root, learned once per corpus from entries that carry both (majority wins)
-function dhatuDp2Bare(c) {
-  if (c && c._dp2bare) return c._dp2bare;
-  const votes = new Map();
+// per corpus, once: dhātupāṭha form → bare root (majority), and the bare roots that have ≥2 distinct entries
+function dhatuIndex(c) {
+  if (c && c._dhatuIdx) return c._dhatuIdx;
+  const votes = new Map(), entries = new Map();
   for (const v of (c ? c.verses : [])) for (const w of v.words || []) {
     const d = w.dhatu && w.dhatu.root && String(w.dhatu.root).includes('√') ? dhatuParse(w.dhatu.root) : null;
-    if (!d || !d.dp || !d.bare) continue;
-    const m = votes.get(d.dp) || new Map(); m.set(d.bare, (m.get(d.bare) || 0) + 1); votes.set(d.dp, m);
+    if (!d || !d.bare) continue;
+    if (d.dp) { const m = votes.get(d.dp) || new Map(); m.set(d.bare, (m.get(d.bare) || 0) + 1); votes.set(d.dp, m); }
+    if (d.entry) { const s = entries.get(d.bare) || new Set(); s.add(d.entry); entries.set(d.bare, s); }
   }
-  const map = new Map([...votes].map(([dp, m]) => [dp, [...m].sort((x, y) => y[1] - x[1])[0][0]]));
-  if (c) Object.defineProperty(c, '_dp2bare', { value: map, enumerable: false });
-  return map;
+  const idx = { dp2bare: new Map([...votes].map(([dp, m]) => [dp, [...m].sort((x, y) => y[1] - x[1])[0][0]])),
+    homonyms: new Set([...entries].filter(([, s]) => s.size > 1).map(([b]) => b)) };
+  if (c) Object.defineProperty(c, '_dhatuIdx', { value: idx, enumerable: false });
+  return idx;
 }
-const dhatuBare = (root, c) => dhatuParse(root, dhatuDp2Bare(c)).bare;
+function dhatuLabel(root, c) {
+  const X = dhatuIndex(c), d = dhatuParse(root, X.dp2bare);
+  return X.homonyms.has(d.bare) && d.entry ? d.bare + ' (' + d.entry + ')' : d.bare;
+}
+const dhatuBare = (root, c) => dhatuLabel(root, c);   // facet value
 function dhatuMatch(root, filter, c) {
-  const d = dhatuParse(root, dhatuDp2Bare(c)); const keys = [d.bare, d.upa ? d.upa + '-' + d.bare : '', d.dp].filter(Boolean);
+  const X = dhatuIndex(c), d = dhatuParse(root, X.dp2bare);
+  const keys = [d.bare, d.upa ? d.upa + '-' + d.bare : '', d.dp, d.entry, d.entry ? d.bare + ' (' + d.entry + ')' : ''].filter(Boolean);
   const qs = (Array.isArray(filter) ? filter : [filter]).map(q => String(q).replace(/√/g, '').trim());
   return qs.some(q => keys.includes(q));
 }
@@ -850,7 +864,7 @@ const TOOL_SCHEMAS = [
       lemma: { type: 'string', description: 'Exact stem/prātipadika (Gita only).' },
       isSarvanama: { type: 'boolean', description: 'Restrict to pronouns (सर्वनाम).' },
       karaka_role: { type: 'string', description: 'kāraka role, e.g. कर्ता, कर्म, करणम्, सम्प्रदानम्, अपादानम्, अधिकरणम्, विशेषणम्.' },
-      dhatu: { type: 'string', description: 'verbal root — every text except BS (bhāṣya-only). Give the bare root (कृ, गम्, दृश्, रूप्); also accepts the upasarga form (प्र-नम्) or the dhātupāṭha form (डुकृञ्). Result rows show the full root entry (gaṇa code, kṛt chain).' },
+      dhatu: { type: 'string', description: 'verbal root — every text except BS (bhāṣya-only). Give the bare root (कृ, गम्, दृश्, रूप्) to match every sense; for ONE sense of a homonymous root give the facet label from list_values(dhatu), e.g. "अस् (असुँ क्षेपणे)" (throw) vs "अस् (असँ भुवि)" (be), or the dhātupāṭha form (असुँ). Also accepts the upasarga form (प्र-नम्). Result rows show the full root entry (gaṇa code, kṛt chain).' },
       krt_pratyaya: { type: 'string', description: 'kṛt suffix, e.g. क्त, क्तिन्, शतृ, ल्युट् (from morphology or कृत् peel layer).' },
       taddhita_pratyaya: { type: 'string', description: 'taddhita suffix, e.g. मतुप्, तसिल्, वति (from तद्धित peel layer).' },
       voice: { type: 'string', description: 'clause voice of the governing verb, e.g. कर्तरि, कर्मणि, भावे.' },
