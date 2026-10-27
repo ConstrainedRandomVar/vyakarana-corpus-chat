@@ -645,18 +645,21 @@ function get_commentary(c, a) {
   const C = commentaryOf(c); if (!C) return NO_COMMENTARY;
   const ref = String(a.ref), max = a.max_chars == null ? 4000 : a.max_chars;
   const works = a.work == null ? null : new Set(Array.isArray(a.work) ? a.work : [a.work]);
-  const by = new Map();
+  // the exact ref AND its sub-refs (Bṛhad 3.9.28 → 3.9.28.2 … 3.9.28.8: the vārttika sits on the parts of a long mantra)
+  const by = new Map(), subRefs = new Set();
   for (const [w, x, r, layer, t] of C.rows) {
-    if (x !== a.text || r !== ref || (works && !works.has(w))) continue;
-    const e = by.get(w) || { work: w, title: (C.works[w] || {}).title, layer, text: x, ref, passages: [], chars: 0 };
-    e.passages.push(t); e.chars += t.length; by.set(w, e);
+    if (x !== a.text || r == null || !(r === ref || r.startsWith(ref + '.')) || (works && !works.has(w))) continue;
+    if (r !== ref) subRefs.add(r);
+    const e = by.get(w) || { work: w, title: (C.works[w] || {}).title, layer, text: x, ref, passages: [], chars: 0, refs: new Set() };
+    e.passages.push(r === ref ? t : '[' + r + '] ' + t); e.chars += t.length; e.refs.add(r); by.set(w, e);
   }
   const out = [...by.values()].map(e => {
     let full = e.passages.join(' ¶ '); const cut = full.length > max;
     if (cut) full = full.slice(0, max) + '…';
-    return { work: e.work, title: e.title, layer: e.layer, text: e.text, ref: e.ref, commentary: full, ...(cut ? { truncated: true, totalChars: e.chars } : {}) };
+    const rs = [...e.refs]; return { work: e.work, title: e.title, layer: e.layer, text: e.text, ref: e.ref, ...(rs.some(r => r !== ref) ? { refs: rs } : {}),
+      commentary: full, ...(cut ? { truncated: true, totalChars: e.chars } : {}) };
   });
-  return { text: a.text, ref, count: out.length, commentaries: out,
+  return { text: a.text, ref, count: out.length, commentaries: out, ...(subRefs.size ? { includesSubRefs: [...subRefs] } : {}),
     ...(out.length ? {} : { note: 'no commentary block at this exact ref — try search_commentary with ref_prefix, or the chapter ref' }) };
 }
 
@@ -1039,7 +1042,7 @@ const TOOL_SCHEMAS = [
   {
     name: 'get_commentary',
     description: 'Read what the commentaries say on ONE verse/sūtra/mantra of a base text: every commentary-layer work with a ' +
-      'block at exactly that ref (e.g. BS 1.1.19 → Nyāyanirṇaya, Ratnaprabhā, Brahmatattvaprakāśikā; Gita 2.47 → Ānandagiri, ' +
+      'block at that ref or its sub-refs (Bṛhad 3.9.28 also returns the vārttika on 3.9.28.2…3.9.28.8, each passage tagged [ref]; e.g. BS 1.1.19 → Nyāyanirṇaya, Ratnaprabhā, Brahmatattvaprakāśikā; Gita 2.47 → Ānandagiri, ' +
       'Śrīdharī, Madhusūdanī, …). Text per work is capped at max_chars (default 4000; truncated=true when cut). The bhāṣya itself ' +
       'comes from get_verse.',
     parameters: { type: 'object', properties: {

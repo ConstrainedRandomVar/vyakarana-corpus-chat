@@ -372,6 +372,26 @@ const nText = Object.values(stats.texts).length;
 const nVerses = Object.values(stats.texts).reduce((a, t) => a + (t.verses || 0), 0);
 const nWords = Object.values(stats.texts).reduce((a, t) => a + (t.words || 0), 0);
 
+// Example questions on the page. The Claude service swaps three for commentary-analysis examples (Harsha 2026-10-27): it has the
+// commentary layer tools and follows them reliably; the Gemini service keeps the original seven.
+const EXAMPLES_BASE = [
+  'How many tṛtīyā words are in the Vivekacūḍāmaṇi? Show 5 examples.',
+  'Compounds in the Pañcadaśī that peel to ≥4 layers — 3 with full vigraha.',
+  'Which text uses कर्मणि voice most?',
+  'Examples of hetau-pañcamī in the Bhagavad-gītā bhāṣya.',
+  'What kāraka roles exist, and how frequent is हेतुः?',
+  'Where does the bhāṣya carry out a vicāra on ānanda? Name the top discussions, with their conclusions.',
+  'Outside the Brahmasūtra, where does Śaṅkara discuss karma vs jñāna? Top 5, with key sentences.',
+];
+const EXAMPLES_CLAUDE = [
+  EXAMPLES_BASE[0], EXAMPLES_BASE[1],
+  'How do Śrīdhara and Madhusūdana differ on Gītā 2.47? Quote both.',
+  'What do Ānandagiri, the Ratnaprabhā and the Brahmatattvaprakāśikā say on Brahmasūtra 1.1.19?',
+  'What does Sureśvara’s vārttika add to Śaṅkara on Bṛhadāraṇyaka 3.9.28?',
+  EXAMPLES_BASE[5], EXAMPLES_BASE[6],
+];
+const EXAMPLES = USE_CLAUDE ? EXAMPLES_CLAUDE : EXAMPLES_BASE;
+
 const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Vyākaraṇa Corpus Assistant</title>
@@ -408,13 +428,7 @@ button.send:disabled{opacity:.5}
 <p class="sub">Ask in plain English about ${nText} analysed Sanskrit texts (${nVerses.toLocaleString()} verses · ${nWords.toLocaleString()} words). Every answer is grounded in a deterministic query with citations — no guessing.</p>
 ${PASSWORD ? '<div class="pw">Access code: <input id="pw" type="password" placeholder="code"></div>' : ''}
 <div class="ex">
-<button>How many tṛtīyā words are in the Vivekacūḍāmaṇi? Show 5 examples.</button>
-<button>Compounds in the Pañcadaśī that peel to ≥4 layers — 3 with full vigraha.</button>
-<button>Which text uses कर्मणि voice most?</button>
-<button>Examples of hetau-pañcamī in the Bhagavad-gītā bhāṣya.</button>
-<button>What kāraka roles exist, and how frequent is हेतुः?</button>
-<button>Where does the bhāṣya carry out a vicāra on ānanda? Name the top discussions, with their conclusions.</button>
-<button>Outside the Brahmasūtra, where does Śaṅkara discuss karma vs jñāna? Top 5, with key sentences.</button>
+${EXAMPLES.map(q => `<button>${q}</button>`).join('\n')}
 </div>
 <div id="log"></div>
 </div>
