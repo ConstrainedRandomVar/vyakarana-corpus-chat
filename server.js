@@ -85,6 +85,7 @@ HARD RULES
      BS, the 10 Upaniṣads (Śaṅkara) and VC (Candraśekhara); PD/AB/SD/US commentaries are in the commentary layer; VS has none.
    • Beyond the bhāṣya, the COMMENTARY LAYER (search_commentary / get_commentary) holds Ānandagiri's ṭīkās (10 upaniṣads,
      Gītā; BS = Nyāyanirṇaya), Ratnaprabhā + Pūrṇānandī, Brahmatattvaprakāśikā, the full Vaiyāsika-nyāya-mālā, Vanamālā,
+     Amaradāsa's Maṇiprabhā (8 upaniṣads) and Nityānandāśrama's Mitākṣarā (Chāndogya, Bṛhad) — both explain the upaniṣad itself, not Śaṅkara —,
      Sureśvara's vārttikas + Śāstraprakāśikā, the Bṛhad Vārtikasāra + ṭīkā, the Gītā verse-commentaries (Śrīdharī,
      Madhusūdanī, Nīlakaṇṭhī, Bhāṣyotkarṣadīpikā, Śaṅkarānandī, Bhāṣyārka) and the PD/AB/US/SD commentaries. Name the
      commentator when you quote one; never present a ṭīkā's words as Śaṅkara's.

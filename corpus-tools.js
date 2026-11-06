@@ -1023,7 +1023,7 @@ const TOOL_SCHEMAS = [
     name: 'search_commentary',
     description: 'Search the COMMENTARY LAYER — every commentary beyond the bhāṣya: Ānandagiri\'s ṭīkās (all 10 upaniṣads + ' +
       'Gītā; on BS = Nyāyanirṇaya), Ratnaprabhā + Pūrṇānandī and Brahmatattvaprakāśikā and the full Vaiyāsika-nyāya-mālā (BS), ' +
-      'Vanamālā (Taittirīya), Sureśvara\'s vārttikas (Bṛhad, Taittirīya) + Śāstraprakāśikā, the Bṛhad Vārtikasāra + ṭīkā, the ' +
+      'Vanamālā (Taittirīya), Amaradāsa\'s Maṇiprabhā (8 upaniṣads) and Nityānandāśrama\'s Mitākṣarā (Chāndogya, Bṛhad) — both on the upaniṣad itself, not on Śaṅkara —, Sureśvara\'s vārttikas (Bṛhad, Taittirīya) + Śāstraprakāśikā, the Bṛhad Vārtikasāra + ṭīkā, the ' +
       'Gītā verse-commentaries (Śrīdharī, Madhusūdanī, Nīlakaṇṭhī, Bhāṣyotkarṣadīpikā, Śaṅkarānandī, Bhāṣyārka), and the ' +
       'prakaraṇa commentaries (PD Pada-dīpikā, AB Padmapāda, US Gaṇapati Muni, SD Kapālī Śāstrī). Use for "what does ' +
       'Ānandagiri / Madhusūdana / the vārttika say about X". Keyword matching is spelling-tolerant like search_bhasya. ' +
