@@ -82,7 +82,8 @@ HARD RULES
      morphology plus every text's samāsa peel / kṛt chain. • VS (Vicārasāgara, reading-only prose) has words, meaning,
      dhātu and samāsa — no case/kāraka/clauses.
    • sandhi exists for Gita, VC, PD, AB, SAD, UPS only. • bhāṣya (in get_verse / search_bhasya / find_discussions) exists for Gita,
-     BS, the 10 Upaniṣads (Śaṅkara) and VC (Candraśekhara); PD/AB/SD/US commentaries are in the commentary layer; VS has none.
+     BS, the 10 Upaniṣads (Śaṅkara), Shveta (Śvetāśvatara: the bhāṣya ascribed to Śaṅkara + the mūla text — no word rows, so no
+     case/kāraka/sandhi/dhātu queries) and VC (Candraśekhara); PD/AB/SD/US commentaries are in the commentary layer; VS has none.
    • Beyond the bhāṣya, the COMMENTARY LAYER (search_commentary / get_commentary) holds Ānandagiri's ṭīkās (10 upaniṣads,
      Gītā; BS = Nyāyanirṇaya), Ratnaprabhā + Pūrṇānandī, Brahmatattvaprakāśikā, the full Vaiyāsika-nyāya-mālā, Vanamālā,
      Amaradāsa's Maṇiprabhā (8 upaniṣads) and Nityānandāśrama's Mitākṣarā (Chāndogya, Bṛhad) — both explain the upaniṣad itself, not Śaṅkara —,
@@ -118,7 +119,7 @@ HARD RULES
 7. FORMAT answers in plain Markdown (headings, **bold**, bullet/numbered lists). Do NOT use LaTeX or math notation — no $...$, \\rightarrow, \\sqrt, \\text, \\ge, \\le. Use plain Unicode instead: → ⇒ ≥ ≤ × · √. Show a samāsa peel as layer → layer → layer.
 
 Text keys: Gita, Kena, Kathaka, Isha, Mandukya, Mundaka, Prashna, Taitiriya, Aitareya, Chandogya, Brha, BS,
-VC, PD, AB (Ātmabodha), UPS (Upadeśa Sāram), SAD (Saddarśanam), VS (Vicārasāgara). Map loose names to the right key. Keep prose tight and scholarly; render Sanskrit in Devanāgarī.`;
+Shveta (Śvetāśvatara), VC, PD, AB (Ātmabodha), UPS (Upadeśa Sāram), SAD (Saddarśanam), VS (Vicārasāgara). Map loose names to the right key. Keep prose tight and scholarly; render Sanskrit in Devanāgarī.`;
 
 function toolFns() { return T.TOOL_SCHEMAS.map(s => ({ name: s.name, description: s.description, parameters: s.parameters })); }
 
@@ -182,7 +183,7 @@ async function generate(contents) {
 const ACADEMY = 'https://constrainedrandomvar.github.io/vedantic-vyakarana-academy/';
 const READING_OUT = { Gita: 'gita', Isha: 'isha', Kena: 'kena', Kathaka: 'kathaka', Prashna: 'prashna', Mundaka: 'mundaka',
   Mandukya: 'mandukya', Taitiriya: 'taitiriya', Aitareya: 'aitareya', Chandogya: 'chandogya', Brha: 'brha', BS: 'bs', VC: 'vc',
-  PD: 'pd', AB: 'ab', UPS: 'ups', SAD: 'sad', VS: 'vicharasagara' };
+  PD: 'pd', AB: 'ab', UPS: 'ups', SAD: 'sad', VS: 'vicharasagara', Shveta: 'shveta', Shvetashvatara: 'shveta' };
 let REFIDX = {};
 try { REFIDX = JSON.parse(fs.readFileSync(path.join(__dirname, 'svadhyaya-refidx.js'), 'utf8').replace(/^window\.SVADHYAYA_REFIDX=/, '').replace(/;\s*$/, '')); }
 catch (e) { console.warn('no svadhyaya-refidx.js — answers will carry no reading-view links'); }
