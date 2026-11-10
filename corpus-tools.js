@@ -1046,7 +1046,7 @@ const TOOL_SCHEMAS = [
       'Śrīdharī, Madhusūdanī, …). Text per work is capped at max_chars (default 4000; truncated=true when cut). The bhāṣya itself ' +
       'comes from get_verse.',
     parameters: { type: 'object', properties: {
-      text: { type: 'string', description: 'base text key, e.g. BS, Gita, Brha, Taitiriya, Shveta, PD, AB, UPS, SAD.' },
+      text: { type: 'string', description: 'base text key, e.g. BS, Gita, Brha, Taitiriya, Shveta, PD, AB, UPS, SAD, DDV.' },
       ref: { type: 'string', description: 'exact ref, e.g. "1.1.19", "2.47", "3.9.28".' },
       work: { type: 'string', description: 'optional: only this work id.' },
       max_chars: { type: 'integer', description: 'cap per work (default 4000).' },
